@@ -3013,6 +3013,191 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Couldn\'t get advice right now.'**
   String get finance_tipsError;
+
+  /// No description provided for @finance_tipOverdue.
+  ///
+  /// In en, this message translates to:
+  /// **'Visit or call {name} this week and collect part of the {amount} they owe.'**
+  String finance_tipOverdue(String name, String amount);
+
+  /// No description provided for @finance_tipCashShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Restock smaller this week: restocks cost {amount} more than the money that came in.'**
+  String finance_tipCashShort(String amount);
+
+  /// No description provided for @finance_tipCreditGrowing.
+  ///
+  /// In en, this message translates to:
+  /// **'Give less new credit this week and collect old dues first. {total} is owed now.'**
+  String finance_tipCreditGrowing(String total);
+
+  /// No description provided for @finance_tipSalesDrop.
+  ///
+  /// In en, this message translates to:
+  /// **'Sales fell {percent}. Check which items ran out and restock your best sellers first.'**
+  String finance_tipSalesDrop(String percent);
+
+  /// No description provided for @finance_tipCollectEarly.
+  ///
+  /// In en, this message translates to:
+  /// **'Collect the {amount} customers owe before it gets old. Small, regular collections are easiest.'**
+  String finance_tipCollectEarly(String amount);
+
+  /// No description provided for @finance_tipGoDigital.
+  ///
+  /// In en, this message translates to:
+  /// **'Ask customers to pay by mobile wallet more often. Digital sales build a record lenders trust.'**
+  String get finance_tipGoDigital;
+
+  /// No description provided for @finance_tipFinancing.
+  ///
+  /// In en, this message translates to:
+  /// **'{option} could help your shop. Compare the lender\'s terms before you decide.'**
+  String finance_tipFinancing(String option);
+
+  /// No description provided for @finance_tipKeepRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep recording every sale and restock so your money picture stays accurate.'**
+  String get finance_tipKeepRecording;
+
+  /// No description provided for @backup_section.
+  ///
+  /// In en, this message translates to:
+  /// **'Your data'**
+  String get backup_section;
+
+  /// No description provided for @backup_now.
+  ///
+  /// In en, this message translates to:
+  /// **'Back up now'**
+  String get backup_now;
+
+  /// No description provided for @backup_never.
+  ///
+  /// In en, this message translates to:
+  /// **'Never backed up. Your shop lives only on this phone.'**
+  String get backup_never;
+
+  /// No description provided for @backup_daysAgo.
+  ///
+  /// In en, this message translates to:
+  /// **'{days, plural, =0{Last backup: today} =1{Last backup: yesterday} other{Last backup: {days} days ago}}'**
+  String backup_daysAgo(int days);
+
+  /// No description provided for @backup_restore.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore backup'**
+  String get backup_restore;
+
+  /// No description provided for @backup_restoreSub.
+  ///
+  /// In en, this message translates to:
+  /// **'Bring the shop back from a backup file'**
+  String get backup_restoreSub;
+
+  /// No description provided for @backup_restoreConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace everything on this phone?'**
+  String get backup_restoreConfirmTitle;
+
+  /// No description provided for @backup_restoreConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This backup of {shop} has {products} products and {sales} sales, made {date}. Everything on this phone now will be replaced.'**
+  String backup_restoreConfirmBody(
+    String shop,
+    int products,
+    int sales,
+    String date,
+  );
+
+  /// No description provided for @backup_restoreButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore'**
+  String get backup_restoreButton;
+
+  /// No description provided for @backup_restored.
+  ///
+  /// In en, this message translates to:
+  /// **'Shop restored from backup'**
+  String get backup_restored;
+
+  /// No description provided for @backup_failed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t finish. Please try again.'**
+  String get backup_failed;
+
+  /// No description provided for @backup_notBackup.
+  ///
+  /// In en, this message translates to:
+  /// **'That file isn\'t an EasySell backup.'**
+  String get backup_notBackup;
+
+  /// No description provided for @backup_shareSubject.
+  ///
+  /// In en, this message translates to:
+  /// **'EasySell shop backup'**
+  String get backup_shareSubject;
+
+  /// No description provided for @teach_title.
+  ///
+  /// In en, this message translates to:
+  /// **'Photos for scanning'**
+  String get teach_title;
+
+  /// No description provided for @teach_none.
+  ///
+  /// In en, this message translates to:
+  /// **'Take 2–3 photos from different sides so Scan can recognise this product, even without a label.'**
+  String get teach_none;
+
+  /// No description provided for @teach_count.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Scan knows this product from 1 photo. Add one more from another side.} other{Scan knows this product from {count} photos. Every sale you scan teaches it more.}}'**
+  String teach_count(int count);
+
+  /// No description provided for @teach_add.
+  ///
+  /// In en, this message translates to:
+  /// **'Take photo'**
+  String get teach_add;
+
+  /// No description provided for @teach_learning.
+  ///
+  /// In en, this message translates to:
+  /// **'Learning…'**
+  String get teach_learning;
+
+  /// No description provided for @teach_failed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t learn from that photo. Please try again.'**
+  String get teach_failed;
+
+  /// No description provided for @teach_removeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove this photo?'**
+  String get teach_removeTitle;
+
+  /// No description provided for @teach_remove.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove'**
+  String get teach_remove;
+
+  /// No description provided for @teach_fromScan.
+  ///
+  /// In en, this message translates to:
+  /// **'Learned from a scan'**
+  String get teach_fromScan;
 }
 
 class _AppLocalizationsDelegate

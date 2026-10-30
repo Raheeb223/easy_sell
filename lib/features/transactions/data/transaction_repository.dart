@@ -1,33 +1,43 @@
-import 'dart:io';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sqflite/sqflite.dart' show DatabaseExecutor;
 
+import '../../../core/db/app_database.dart';
 import '../../../core/error/failure.dart';
 import '../../../core/error/result.dart';
-import '../../../shared/providers/supabase_provider.dart';
+import '../../expiry/data/batch_repository.dart';
 import '../../expiry/domain/expiry_dates.dart';
 import '../domain/transaction.dart';
 import 'day_range.dart';
+import 'sale_cart_writer.dart';
 
-/// Every sale column plus the expiry date of the delivery it came from, so the
-/// sale detail can show it without a second request. `batch` is the embed name
-/// [Transaction.batchExpiry] reads; transactions has one FK to product_batches.
-const saleSelect = '*, batch:product_batches(expiry_date)';
+/// Every sale column plus the expiry date of the delivery it came from.
+const _saleSelect = '''
+  SELECT t.*, b.expiry_date AS batch_expiry_date
+  FROM transactions t
+  LEFT JOIN product_batches b ON b.id = t.batch_id''';
 
-/// Records stock movements via the atomic Postgres RPCs. NEVER does client-side
-/// stock math — `record_sale`/`record_restock` lock the row, check/adjust stock,
-/// and insert the transaction with frozen prices in a single transaction.
+/// A stored transaction row as [Transaction.fromJson] reads it (the delivery's
+/// expiry nested under `batch`, as the old PostgREST embed returned it).
+Transaction transactionFromRow(Map<String, Object?> row) {
+  final json = decodeRow(row);
+  final expiry = json.remove('batch_expiry_date');
+  if (expiry != null) json['batch'] = {'expiry_date': expiry};
+  return Transaction.fromJson(json);
+}
+
+/// Records stock movements atomically in the phone's database. Each writer is
+/// a port of the Postgres function named in its doc and runs in ONE SQLite
+/// transaction: stock, sale rows, discount split and khata debt all commit
+/// together or not at all (design §3).
 class TransactionRepository {
-  TransactionRepository(this._client);
+  TransactionRepository(this._db);
 
-  final SupabaseClient _client;
+  final AppDatabase _db;
 
-  /// Atomic restock via `record_restock` (0011). [restockId] is minted by the
-  /// caller and re-sent on a retry: the server records a given id once and
-  /// returns the existing row on a repeat, so a lost reply cannot add the
-  /// stock twice. With [expiryDate] the delivery is recorded in the same
-  /// transaction; [receivedOn] is the PHONE's local date (expiry spec §3.4).
+  /// Restock (`record_restock`, 0011). [restockId] is minted by the caller and
+  /// re-sent on a retry: a given id is recorded once, a repeat returns the
+  /// existing row. With [expiryDate] the delivery is recorded in the same
+  /// transaction; [receivedOn] is the phone's local date.
   Future<Result<Transaction>> recordRestock({
     required String shopId,
     required String productId,
@@ -38,42 +48,60 @@ class TransactionRepository {
     DateTime? receivedOn,
   }) async {
     try {
-      final result = await _client.rpc(
-        'record_restock',
-        params: {
-          'p_shop_id': shopId,
-          'p_product_id': productId,
-          'p_quantity': quantity,
-          'p_source': source,
-          'p_restock_id': restockId,
-          if (expiryDate != null) 'p_expiry_date': ymd(expiryDate),
-          if (receivedOn != null) 'p_received_on': ymd(receivedOn),
-        },
-      );
-      // A function `returns transactions` yields a single composite object;
-      // some setups return a single-element list. Handle both.
-      final row = result is List ? result.first : result;
-      return Result.success(
-        Transaction.fromJson(Map<String, dynamic>.from(row as Map)),
-      );
+      final row = await _db.db.transaction((txn) async {
+        final existing = await _byId(txn, shopId, restockId);
+        if (existing != null) return existing;
+
+        final qty = toMilli(quantity);
+        if (qty <= 0) {
+          throw const LocalDbException('Quantity must be greater than zero');
+        }
+        final product = await _product(txn, shopId, productId);
+        final now = nowMicros();
+        await txn.rawUpdate(
+          'UPDATE products SET quantity_milli = quantity_milli + ?, '
+          'updated_at = ? WHERE id = ?',
+          [qty, now, productId],
+        );
+        await txn.insert('transactions', {
+          'id': restockId,
+          'shop_id': shopId,
+          'product_id': productId,
+          'type': 'restock',
+          'quantity_milli': qty,
+          'buying_price_cents': product['buying_price_cents'],
+          'selling_price_cents': product['selling_price_cents'],
+          'source': source,
+          'created_at': now,
+        });
+        if (expiryDate != null) {
+          await insertDeliveryMerged(
+            txn,
+            shopId: shopId,
+            productId: productId,
+            quantityMilli: qty,
+            buyingPriceCents: product['buying_price_cents']! as int,
+            receivedOn: ymd(receivedOn ?? DateTime.now()),
+            expiryDate: ymd(expiryDate),
+          );
+        }
+        return (await _byId(txn, shopId, restockId))!;
+      });
+      _db.notify({'products', 'transactions', 'product_batches'});
+      return Result.success(row);
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// Atomic multi-item checkout: commits every cart line in one Postgres
-  /// transaction via `record_sale_cart`, or none of them if any line fails
-  /// (e.g. insufficient stock). Returns the inserted rows, all sharing one
-  /// `sale_group_id` so History can group them into a single receipt.
+  /// Multi-item checkout (`record_sale_cart`, 0018). Every line commits, or
+  /// none (e.g. insufficient stock). The rows share one `sale_group_id`.
   ///
-  /// [saleGroupId] is minted by the caller, not the server. The server records
-  /// a given id once and returns the existing rows on a repeat, so re-sending
-  /// the same id after a lost reply cannot record the sale twice.
+  /// [saleGroupId] is minted by the caller: a repeat of the same id returns
+  /// the rows already recorded instead of selling twice.
   ///
-  /// [digital] marks a paid-now sale as digital rather than cash (0018). Only
-  /// digital is ever sent: cash is the server's default and credit follows
-  /// from [customerId]. Leaving the parameter out for those keeps cash and
-  /// credit checkouts working against a database that has not had 0018 yet.
+  /// [items] are `{product_id, quantity, batch_id?}`. [digital] marks a
+  /// paid-now sale as digital; a sale with [customerId] is credit.
   Future<Result<List<Transaction>>> recordSaleCart({
     required String shopId,
     required List<Map<String, dynamic>> items,
@@ -84,128 +112,148 @@ class TransactionRepository {
     bool digital = false,
   }) async {
     try {
-      final result = await _client.rpc(
-        'record_sale_cart',
-        params: {
-          'p_shop_id': shopId,
-          'p_items': items,
-          'p_source': source,
-          'p_customer_id': ?customerId,
-          'p_discount': discount,
-          'p_sale_group_id': saleGroupId,
-          if (digital) 'p_payment_method': 'digital',
-        },
-      );
-      final rows = result as List;
-      return Result.success([
-        for (final r in rows)
-          Transaction.fromJson(Map<String, dynamic>.from(r as Map)),
-      ]);
+      final rows = await _db.db.transaction((txn) async {
+        await writeSaleCart(
+          txn,
+          shopId: shopId,
+          items: items,
+          group: saleGroupId,
+          source: source,
+          customerId: customerId,
+          discountCents: toCents(discount),
+          method: digital ? 'digital' : 'cash',
+        );
+        return _group(txn, shopId, saleGroupId);
+      });
+      _db.notify({
+        'products',
+        'transactions',
+        'product_batches',
+        'customer_ledger',
+      });
+      return Result.success(rows);
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// Reads recent SALE transactions for the shop, newest first. Read-only — RLS
-  /// already scopes rows to the authenticated user's shop.
-  ///
-  /// Pass [since] to bound the window to sales at/after that instant (the Reports
-  /// tab uses this to scope the category split and best sellers to the selected
-  /// period; the boundary mirrors `get_dashboard_summary`'s `date_trunc`).
+  Future<List<Transaction>> _group(
+    DatabaseExecutor txn,
+    String shopId,
+    String group,
+  ) async {
+    final rows = await txn.rawQuery(
+      '$_saleSelect WHERE t.shop_id = ? AND t.sale_group_id = ? '
+      'ORDER BY t.rowid',
+      [shopId, group],
+    );
+    return [for (final r in rows) transactionFromRow(r)];
+  }
+
+  Future<Transaction?> _byId(
+    DatabaseExecutor txn,
+    String shopId,
+    String id,
+  ) async {
+    final rows = await txn.rawQuery(
+      '$_saleSelect WHERE t.id = ? AND t.shop_id = ?',
+      [id, shopId],
+    );
+    return rows.isEmpty ? null : transactionFromRow(rows.first);
+  }
+
+  Future<Map<String, Object?>> _product(
+    DatabaseExecutor txn,
+    String shopId,
+    String productId,
+  ) async {
+    final rows = await txn.query(
+      'products',
+      where: 'id = ? AND shop_id = ?',
+      whereArgs: [productId, shopId],
+      limit: 1,
+    );
+    if (rows.isEmpty) throw const LocalDbException('Product not found');
+    return rows.first;
+  }
+
+  /// Recent SALE transactions, newest first; [since] bounds the window.
   Future<Result<List<Transaction>>> recentSales({
     required String shopId,
     int limit = 100,
     DateTime? since,
   }) async {
     try {
-      var query = _client
-          .from('transactions')
-          .select(saleSelect)
-          .eq('shop_id', shopId)
-          .eq('type', 'sale');
-      if (since != null) {
-        query = query.gte('created_at', since.toUtc().toIso8601String());
-      }
-      final rows = await query
-          .order('created_at', ascending: false)
-          .limit(limit);
-      final list = (rows as List)
-          .map((r) => Transaction.fromJson(Map<String, dynamic>.from(r as Map)))
-          .toList();
-      return Result.success(list);
+      final rows = await _db.db.rawQuery(
+        '$_saleSelect WHERE t.shop_id = ? AND t.type = \'sale\''
+        '${since != null ? ' AND t.created_at >= ?' : ''} '
+        'ORDER BY t.created_at DESC LIMIT ?',
+        [
+          shopId,
+          if (since != null) since.toUtc().microsecondsSinceEpoch,
+          limit,
+        ],
+      );
+      return Result.success([for (final r in rows) transactionFromRow(r)]);
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// All SALE transactions on [day] (the shopper's local calendar day), newest
-  /// first. Unlike [recentSales] there is NO recent-N cap, so a drilled-into
-  /// past day is always complete regardless of how many newer sales exist.
+  /// All SALE transactions on [day] (local calendar day), newest first.
   Future<Result<List<Transaction>>> salesForDay({
     required String shopId,
     required DateTime day,
   }) async {
     try {
       final range = dayRangeUtc(day);
-      final rows = await _client
-          .from('transactions')
-          .select(saleSelect)
-          .eq('shop_id', shopId)
-          .eq('type', 'sale')
-          .gte('created_at', range.startUtc.toIso8601String())
-          .lt('created_at', range.endUtc.toIso8601String())
-          .order('created_at', ascending: false);
-      final list = (rows as List)
-          .map((r) => Transaction.fromJson(Map<String, dynamic>.from(r as Map)))
-          .toList();
-      return Result.success(list);
+      final rows = await _db.db.rawQuery(
+        '$_saleSelect WHERE t.shop_id = ? AND t.type = \'sale\' '
+        'AND t.created_at >= ? AND t.created_at < ? '
+        'ORDER BY t.created_at DESC',
+        [
+          shopId,
+          range.startUtc.microsecondsSinceEpoch,
+          range.endUtc.microsecondsSinceEpoch,
+        ],
+      );
+      return Result.success([for (final r in rows) transactionFromRow(r)]);
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// The local calendar date of the shop's first-ever sale, or null when the
-  /// shop has no sales yet. Backs the lower bound of every in-app date picker.
+  /// The local calendar date of the shop's first sale, or null.
   Future<Result<DateTime?>> earliestSaleDate({required String shopId}) async {
     try {
-      final rows = await _client
-          .from('transactions')
-          .select('created_at')
-          .eq('shop_id', shopId)
-          .eq('type', 'sale')
-          .order('created_at', ascending: true)
-          .limit(1);
-      final list = rows as List;
-      if (list.isEmpty) return const Result.success(null);
-      final raw = (list.first as Map)['created_at'] as String;
-      final local = DateTime.parse(raw).toLocal();
+      final rows = await _db.db.rawQuery(
+        "SELECT MIN(created_at) AS first FROM transactions "
+        "WHERE shop_id = ? AND type = 'sale'",
+        [shopId],
+      );
+      final first = rows.first['first'] as int?;
+      if (first == null) return const Result.success(null);
+      final local = DateTime.fromMicrosecondsSinceEpoch(first, isUtc: true)
+          .toLocal();
       return Result.success(DateTime(local.year, local.month, local.day));
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// RPC exceptions raised inside the function (e.g. "Insufficient stock for
-  /// Pepsi: have 3, need 5", "Product not found") arrive as
-  /// [PostgrestException]. The message is kept as an English fallback; the
-  /// [Failure.code] is what the UI should render.
+  /// Writer errors carry the old Postgres wording, so the same classifier
+  /// gives the UI a translatable [Failure.code].
   Failure _map(Object e) {
-    if (e is PostgrestException) {
-      if (e.message.isEmpty) {
-        return const DatabaseFailure(
-          'Could not complete the transaction. Please try again.',
-        );
-      }
+    if (e is LocalDbException) {
       final (:code, :detail) = classifyServerMessage(e.message);
       return DatabaseFailure(e.message, code: code, detail: detail);
     }
-    if (e is SocketException) {
-      return const NetworkFailure('No internet connection. Please try again.');
-    }
-    return const UnexpectedFailure('Something went wrong. Please try again.');
+    return const DatabaseFailure(
+      'Could not complete the transaction. Please try again.',
+    );
   }
 }
 
 final transactionRepositoryProvider = Provider<TransactionRepository>((ref) {
-  return TransactionRepository(ref.watch(supabaseClientProvider));
+  return TransactionRepository(ref.watch(appDatabaseProvider));
 });

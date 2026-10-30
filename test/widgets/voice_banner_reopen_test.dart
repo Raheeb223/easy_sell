@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/config/theme.dart';
 import 'package:ai_shopkeeper/core/error/result.dart';
@@ -7,7 +6,7 @@ import 'package:ai_shopkeeper/core/router/app_router.dart';
 import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_controller.dart';
 import 'package:ai_shopkeeper/features/transactions/presentation/sales_providers.dart';
-import 'package:ai_shopkeeper/features/voice/data/audio_recorder.dart';
+import 'package:ai_shopkeeper/features/voice/data/speech_capture.dart';
 import 'package:ai_shopkeeper/features/voice/data/voice_sale_repository.dart';
 import 'package:ai_shopkeeper/features/voice/domain/voice_parse_result.dart';
 import 'package:ai_shopkeeper/features/voice/presentation/voice_controller.dart';
@@ -18,8 +17,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/voice_fakes.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+class _PendingRepo extends FakeVoiceRepo {
+  _PendingRepo() : this._(Completer<Result<VoiceParseResult>>());
+  _PendingRepo._(this.completer) : super(null, completer);
+  final Completer<Result<VoiceParseResult>> completer;
+}
 
 /// Mounts the banner exactly the way `app.dart` does -- inside
 /// `MaterialApp.router`'s `builder`, which sits ABOVE the router's Navigator.
@@ -27,54 +34,6 @@ import 'package:google_fonts/google_fonts.dart';
 /// `voice_ready_banner_test.dart` puts it under a plain `MaterialApp(home:)`,
 /// which supplies a Navigator ancestor the real app does not have, so the tap
 /// path it exercises is not the one that ships.
-
-class _FakeRecorder implements AudioRecorderPort {
-  @override
-  Stream<double> get levels => const Stream<double>.empty();
-
-  @override
-  Future<bool> hasPermission() async => true;
-
-  @override
-  Future<void> start() async {}
-
-  @override
-  Future<({Uint8List bytes, String mime})?> stop() async =>
-      (bytes: Uint8List.fromList(const [1, 2, 3]), mime: 'audio/m4a');
-
-  @override
-  Future<void> cancel() async {}
-
-  @override
-  Future<void> dispose() async {}
-}
-
-class _PendingRepo implements VoiceSaleRepository {
-  final completer = Completer<Result<VoiceParseResult>>();
-  bool parseCalled = false;
-
-  @override
-  Future<void> warmUp() async {}
-
-  @override
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) {
-    parseCalled = true;
-    return completer.future;
-  }
-
-  @override
-  Future<Result<VoiceParseResult>> parseTranscript({
-    required String transcript,
-    required List<Map<String, dynamic>> candidates,
-  }) {
-    parseCalled = true;
-    return completer.future;
-  }
-}
 
 const _parsed = VoiceParseResult(
   heardText: 'two pepsi',
@@ -91,13 +50,12 @@ const _parsed = VoiceParseResult(
 ProviderContainer _container(VoiceSaleRepository repo) {
   final container = ProviderContainer(
     overrides: [
-      audioRecorderProvider.overrideWithValue(_FakeRecorder()),
+      speechCaptureProvider.overrideWithValue(FakeSpeechCapture()),
       voiceSaleRepositoryProvider.overrideWithValue(repo),
       productsStreamProvider.overrideWith(
         (ref) =>
             Stream.value([const Product(id: 'p1', shopId: 's', name: 'Pepsi')]),
       ),
-      voiceOnlineProvider.overrideWithValue(true),
       recentUnitsSoldProvider.overrideWith((ref) => const <String, double>{}),
       autoStopOnSilenceProvider.overrideWithValue(false),
     ],

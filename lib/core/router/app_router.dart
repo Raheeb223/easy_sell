@@ -7,7 +7,6 @@ import '../widgets/app_backdrop.dart';
 
 import '../../features/analytics/presentation/analytics_screen.dart';
 import '../../features/auth/data/auth_repository.dart';
-import '../../features/auth/presentation/login_screen.dart';
 import '../../features/cart/presentation/cart_screen.dart';
 import '../../features/customers/presentation/customer_detail_screen.dart';
 import '../../features/customers/presentation/customers_screen.dart';
@@ -30,14 +29,12 @@ import '../../features/transactions/domain/transaction.dart';
 import '../../features/transactions/presentation/history_screen.dart';
 import '../../features/transactions/presentation/sale_detail_screen.dart';
 import '../../shared/providers/onboarding_provider.dart';
-import '../../shared/providers/supabase_provider.dart';
 
 /// Centralized route path constants — reference these instead of raw strings.
 class AppRoutes {
   const AppRoutes._();
 
   static const String welcome = '/welcome';
-  static const String login = '/login';
   static const String onboarding = '/onboarding';
   static const String dashboard = '/';
   static const String inventory = '/inventory';
@@ -93,16 +90,15 @@ CustomTransitionPage<void> _transitionPage(Widget child, {bool slide = true}) {
 }
 
 /// The app router: a [StatefulShellRoute] hosts the four bottom-nav destinations
-/// (Home / Items / Reports / History); auth, onboarding, product detail/forms
-/// and the settings sub-pages render full-screen on the root navigator.
+/// (Home / Items / Reports / History); onboarding, product detail/forms and the
+/// settings sub-pages render full-screen on the root navigator.
 ///
-/// Redirects: first launch → /welcome; signed out → /login; signed in with no
-/// shop → /onboarding; otherwise the app. Refreshes on auth, shop, and
-/// onboarding changes.
+/// Redirects: first launch → /welcome; no shop on this phone yet →
+/// /onboarding; otherwise the app. There is no sign-in: the shop lives on the
+/// phone (phone-only design). Refreshes on shop and onboarding changes.
 final goRouterProvider = Provider<GoRouter>((ref) {
   final refresh = ValueNotifier<int>(0);
   ref.onDispose(refresh.dispose);
-  ref.listen(authStateChangesProvider, (_, _) => refresh.value++);
   ref.listen(myShopProvider, (_, _) => refresh.value++);
   ref.listen(onboardingSeenProvider, (_, _) => refresh.value++);
 
@@ -111,34 +107,25 @@ final goRouterProvider = Provider<GoRouter>((ref) {
     initialLocation: AppRoutes.dashboard,
     refreshListenable: refresh,
     redirect: (context, state) {
-      final loggedIn =
-          ref.read(supabaseClientProvider).auth.currentUser != null;
       final seenOnboarding = ref.read(onboardingSeenProvider);
       final loc = state.matchedLocation;
+      final setupLoc = loc == AppRoutes.welcome || loc == AppRoutes.onboarding;
 
-      // First-launch onboarding (pre-auth).
-      if (!loggedIn && !seenOnboarding) {
-        return loc == AppRoutes.welcome ? null : AppRoutes.welcome;
-      }
-      // Signed out (onboarding already seen) → login.
-      if (!loggedIn) {
-        return loc == AppRoutes.login ? null : AppRoutes.login;
-      }
-
-      // Signed in: gate on whether a shop exists.
-      final preAuthLoc = loc == AppRoutes.welcome || loc == AppRoutes.login;
       return ref
           .read(myShopProvider)
           .maybeWhen(
             data: (shop) {
-              final atOnboarding = loc == AppRoutes.onboarding;
               if (shop == null) {
-                return atOnboarding ? null : AppRoutes.onboarding;
+                // First launch shows the welcome page once, then shop setup.
+                if (!seenOnboarding) {
+                  return loc == AppRoutes.welcome ? null : AppRoutes.welcome;
+                }
+                return loc == AppRoutes.onboarding ? null : AppRoutes.onboarding;
               }
-              if (atOnboarding || preAuthLoc) return AppRoutes.dashboard;
-              return null;
+              return setupLoc ? AppRoutes.dashboard : null;
             },
-            orElse: () => preAuthLoc ? AppRoutes.dashboard : null,
+            // The shop row loads in milliseconds; stay put until it has.
+            orElse: () => null,
           );
     },
     routes: [
@@ -146,11 +133,6 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.welcome,
         pageBuilder: (_, _) =>
             _transitionPage(const WelcomeScreen(), slide: false),
-      ),
-      GoRoute(
-        path: AppRoutes.login,
-        pageBuilder: (_, _) =>
-            _transitionPage(const LoginScreen(), slide: false),
       ),
       GoRoute(
         path: AppRoutes.onboarding,

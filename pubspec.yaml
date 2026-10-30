@@ -1,5 +1,5 @@
 name: ai_shopkeeper
-description: "AI Shopkeeper Assistant (Member A: Flutter + Supabase)"
+description: "EasySell: a phone-only shop assistant with on-device AI"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -38,7 +38,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_riverpod: ^3.3.2
   go_router: ^17.3.0
-  supabase_flutter: ^2.15.0
   freezed_annotation: ^3.1.0
   json_annotation: ^4.12.0
   intl: ^0.20.2
@@ -46,8 +45,6 @@ dependencies:
   google_fonts: ^8.1.0
   image_picker: ^1.1.2
   shared_preferences: ^2.5.5
-  connectivity_plus: ^7.2.0
-  record: ^7.1.1
   path_provider: ^2.1.6
   # Zone-scoped `clock.now()`. Identical to DateTime.now() in production, but
   # fake_async (and therefore flutter_test) overrides it, so time-dependent UI
@@ -60,6 +57,15 @@ dependencies:
   # Daily expiry reminder, scheduled on the phone (expiry spec §6).
   flutter_local_notifications: ^19.4.0
   timezone: ^0.10.0
+  sqflite: 2.4.5
+  path: 1.9.1
+  archive: 4.5.2
+  share_plus: 13.3.1
+  file_picker: 13.3.0
+  tflite_flutter: 0.12.1
+  google_mlkit_text_recognition: 0.17.1
+  image: 4.5.4
+  speech_to_text: 7.5.0
 
 dev_dependencies:
   flutter_test:
@@ -75,6 +81,7 @@ dev_dependencies:
   freezed: ^3.2.6-dev.1
   json_serializable: ^6.14.0
   flutter_launcher_icons: ^0.14.4
+  sqflite_common_ffi: 2.4.5
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -105,6 +112,8 @@ flutter:
 
   assets:
     - assets/fonts/
+    # EasySell Vision, the on-device product fingerprint model (ml/README.md).
+    - assets/models/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

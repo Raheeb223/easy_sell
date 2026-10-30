@@ -11,15 +11,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:ai_shopkeeper/core/error/result.dart';
-import 'package:ai_shopkeeper/features/finance/data/money_tips_repository.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import '../money_tips_test.dart' show FakeTipsRepo;
-
-final _tipsRepo = FakeTipsRepo(
-  const Result.success(['Collect from Rahim this week.']),
-);
 
 FinanceHealth _h({
   double cash = 0,
@@ -61,7 +53,6 @@ Future<void> _pump(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
-        moneyTipsRepositoryProvider.overrideWithValue(_tipsRepo),
         financeHealthProvider.overrideWith((ref) {
           return switch (value) {
             AsyncData(:final value) => Future.value(value),
@@ -92,7 +83,6 @@ void main() {
   setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    _tipsRepo.calls = 0;
   });
 
   testWidgets('AI advice: only on tap, then shown with its caveat', (
@@ -103,14 +93,13 @@ void main() {
       AsyncValue.data(_h(cash: 300, restock: 800, overdue: 2)),
       const Scaffold(body: SingleChildScrollView(child: MoneyHealthCard())),
     );
-    expect(_tipsRepo.calls, 0);
+    expect(find.textContaining('Visit or call'), findsNothing);
     await tester.tap(find.text('Get advice from EasySell AI'));
     await tester.pump();
     await tester.pump();
-    expect(_tipsRepo.calls, 1);
-    expect(_tipsRepo.lastLang, 'en');
     expect(find.text('AI advice'), findsOneWidget);
-    expect(find.text('Collect from Rahim this week.'), findsOneWidget);
+    // Worked out on the phone from the card's own warnings.
+    expect(find.textContaining('Visit or call'), findsOneWidget);
     expect(find.textContaining('Check them before you act'), findsOneWidget);
     expect(find.text('Get advice from EasySell AI'), findsNothing);
   });

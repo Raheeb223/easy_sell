@@ -9,24 +9,20 @@ import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/section_bits.dart';
 import '../../../core/widgets/two_option_segment.dart';
 import '../../auth/data/auth_repository.dart';
-import '../../auth/presentation/auth_controller.dart';
 import '../../expiry/presentation/expiry_settings_tiles.dart';
 import '../../restock/presentation/restock_settings_tile.dart';
+import 'backup_flow.dart';
 import '../../../shared/providers/locale_provider.dart';
-import '../../../shared/providers/supabase_provider.dart';
 import '../../../shared/providers/theme_mode_provider.dart';
 
-/// Profile + shop info (read-only), preferences, and sign out. Each section is
+/// Shop info (read-only), preferences, and the shop's backup. Each section is
 /// its own card with a blue spaced-caps label (design §8, Settings).
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final user = ref.watch(currentUserProvider);
     final shop = ref.watch(myShopProvider).value;
-    final isGuest = user?.isAnonymous ?? false;
-    final isLoading = ref.watch(authControllerProvider).isLoading;
 
     final l10n = context.l10n;
     return Scaffold(
@@ -48,24 +44,6 @@ class SettingsScreen extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
           children: [
-            _Section(
-              title: l10n.settings_sectionProfile,
-              children: [
-                ListTile(
-                  leading: const SettingsIconTile(Icons.person_outline),
-                  title: Text(
-                    isGuest
-                        ? l10n.settings_guestSession
-                        : (user?.email ?? l10n.settings_signedIn),
-                  ),
-                  subtitle: Text(
-                    isGuest
-                        ? l10n.settings_anonymousData
-                        : l10n.settings_signedIn,
-                  ),
-                ),
-              ],
-            ),
             _Section(
               title: l10n.settings_sectionShop,
               children: [
@@ -125,22 +103,9 @@ class SettingsScreen extends ConsumerWidget {
               title: l10n.settings_sectionExpiry,
               children: const [ExpiryWarnDaysTile(), ExpiryReminderTile()],
             ),
-            // Sign out: a full-width outlined card button.
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: isLoading
-                    ? null
-                    : () => ref.read(authControllerProvider.notifier).signOut(),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(60),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                ),
-                icon: const Icon(Icons.logout),
-                label: Text(l10n.common_signOut),
-              ),
+            _Section(
+              title: l10n.backup_section,
+              children: const [_BackupTile(), _RestoreTile()],
             ),
           ],
         ),
@@ -242,6 +207,48 @@ class _LanguageSelector extends ConsumerWidget {
             l.languageCode == 'bn' ? Icons.translate : Icons.language,
         onChanged: (l) => ref.read(localeProvider.notifier).setLocale(l),
       ),
+    );
+  }
+}
+
+/// "Back up now", with how long ago the last backup was. Everything lives on
+/// this phone only, so the subtitle turns into a warning after
+/// [backupNudgeDays] without one.
+class _BackupTile extends ConsumerWidget {
+  const _BackupTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
+    final last = ref.watch(lastBackupProvider).value;
+    final days = last == null ? null : DateTime.now().difference(last).inDays;
+    final stale = days == null || days >= backupNudgeDays;
+    final colors = Theme.of(context).colorScheme;
+    return ListTile(
+      leading: const SettingsIconTile(Icons.backup_outlined),
+      title: Text(l10n.backup_now),
+      subtitle: Text(
+        days == null ? l10n.backup_never : l10n.backup_daysAgo(days),
+        style: stale ? TextStyle(color: colors.error) : null,
+      ),
+      trailing: const _Chevron(),
+      onTap: () => shareBackupFlow(context, ref),
+    );
+  }
+}
+
+class _RestoreTile extends ConsumerWidget {
+  const _RestoreTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
+    return ListTile(
+      leading: const SettingsIconTile(Icons.settings_backup_restore),
+      title: Text(l10n.backup_restore),
+      subtitle: Text(l10n.backup_restoreSub),
+      trailing: const _Chevron(),
+      onTap: () => restoreBackupFlow(context, ref),
     );
   }
 }

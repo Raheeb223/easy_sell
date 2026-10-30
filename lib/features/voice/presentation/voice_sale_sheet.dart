@@ -86,14 +86,15 @@ class VoiceSaleSheet extends ConsumerWidget {
       VoicePhase.listening => _ListeningPane(
         onStop: notifier.stopAndParse,
         deadline: state.listenDeadline,
+        words: state.heardText,
       ),
       VoicePhase.thinking => const _ThinkingPane(),
       VoicePhase.reviewing => const VoiceReviewSheet(),
       VoicePhase.error => _ErrorPane(
         errorKey: state.errorMessage,
-        // When audio was captured before the failure, retrying re-sends that
-        // recording -- the shopkeeper already said the sale once. When it
-        // wasn't, retry can only mean starting over.
+        // When words were heard before the failure, retrying re-reads them --
+        // the shopkeeper already said the sale once. When they weren't, retry
+        // can only mean starting over.
         onRetry: state.canRetryAudio ? notifier.retryLastAudio : notifier.reset,
         onRecordAgain: state.canRetryAudio ? notifier.reset : null,
         // Retrying into the same noise repeats the same failure, so offer the
@@ -241,9 +242,13 @@ class _IdlePane extends StatelessWidget {
 }
 
 class _ListeningPane extends StatelessWidget {
-  const _ListeningPane({required this.onStop, this.deadline});
+  const _ListeningPane({required this.onStop, this.deadline, this.words});
 
   final VoidCallback onStop;
+
+  /// What the phone has heard so far, shown live so a mishear is caught
+  /// while the shopkeeper is still speaking.
+  final String? words;
 
   /// When the recording will auto-stop, or null before the cap is armed.
   final DateTime? deadline;
@@ -262,6 +267,21 @@ class _ListeningPane extends StatelessWidget {
             l10n.voice_recording,
             style: theme.textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.w500,
+            ),
+          ),
+          // Fixed height so the pane does not jump as words arrive.
+          SizedBox(
+            height: 52,
+            child: Center(
+              child: Text(
+                words ?? '',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
             ),
           ),
           // Fixed height so the pane does not jump when the countdown appears.
@@ -680,7 +700,6 @@ class _ErrorPane extends StatelessWidget {
     'micDenied' => l10n.voice_errMicDenied,
     'noSpeech' => l10n.voice_errNoSpeech,
     'noMatch' => l10n.voice_errNoMatch,
-    'offline' => l10n.voice_errOffline,
     'tooQuiet' => l10n.voice_errTooQuiet,
     final other? => other,
     // Unreachable in practice -- every real transition to `error` sets a

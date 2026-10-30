@@ -1,10 +1,9 @@
-import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/config/theme.dart';
 import 'package:ai_shopkeeper/core/error/result.dart';
 import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_controller.dart';
-import 'package:ai_shopkeeper/features/voice/data/audio_recorder.dart';
+import 'package:ai_shopkeeper/features/voice/data/speech_capture.dart';
 import 'package:ai_shopkeeper/features/voice/data/voice_sale_repository.dart';
 import 'package:ai_shopkeeper/features/voice/domain/voice_parse_result.dart';
 import 'package:ai_shopkeeper/features/voice/presentation/voice_controller.dart';
@@ -15,43 +14,27 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/voice_fakes.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-class _FakeRecorder implements AudioRecorderPort {
-  @override
-  Stream<double> get levels => const Stream<double>.empty();
-  @override
-  Future<bool> hasPermission() async => true;
-  @override
-  Future<void> start() async {}
-  @override
-  Future<({Uint8List bytes, String mime})?> stop() async =>
-      (bytes: Uint8List.fromList(const [1]), mime: 'audio/m4a');
-  @override
-  Future<void> cancel() async {}
-  @override
-  Future<void> dispose() async {}
-}
-
-class _FakeRepo implements VoiceSaleRepository {
-  // Fire-and-forget optimization with no observable effect on parsing.
-  @override
-  Future<void> warmUp() async {}
-
+/// First parse (speech) returns [audio]; later ones (typed text) [text].
+class _FakeRepo extends FakeVoiceRepo {
   _FakeRepo(this.audio, this.text);
   final Result<VoiceParseResult> audio;
   final Result<VoiceParseResult> text;
-  @override
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) async => audio;
+
   @override
   Future<Result<VoiceParseResult>> parseTranscript({
     required String transcript,
-    required List<Map<String, dynamic>> candidates,
-  }) async => text;
+    required List<Product> products,
+    List<String> alternatives = const [],
+    Map<String, double> recentUnits = const {},
+  }) async {
+    final first = parseCalls == 0;
+    await super.parseTranscript(transcript: transcript, products: products);
+    return resolveVoiceIndexes(first ? audio : text, products);
+  }
 }
 
 void main() {
@@ -68,7 +51,7 @@ void main() {
     );
     final container = ProviderContainer(
       overrides: [
-        audioRecorderProvider.overrideWithValue(_FakeRecorder()),
+        speechCaptureProvider.overrideWithValue(FakeSpeechCapture()),
         voiceSaleRepositoryProvider.overrideWithValue(_FakeRepo(Result.success(audio), Result.success(text))),
         productsStreamProvider.overrideWith(
           (ref) => Stream.value(const [Product(id: 'p1', shopId: 's', name: 'Pepsi 1L', quantity: 9)]),

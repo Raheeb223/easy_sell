@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/config/motion.dart';
 import '../../../core/l10n/l10n_ext.dart';
 import '../../auth/presentation/auth_controller.dart';
+import '../../settings/presentation/backup_flow.dart';
 import 'language_step.dart';
 import 'shop_setup_step.dart';
 
@@ -54,11 +55,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           style: theme.textTheme.labelLarge,
         ),
         actions: [
+          // A new phone, or the app reinstalled: bring the shop back from a
+          // backup file instead of starting empty.
           TextButton(
-            onPressed: isLoading
-                ? null
-                : () => ref.read(authControllerProvider.notifier).signOut(),
-            child: Text(l10n.common_signOut),
+            onPressed: isLoading ? null : () => restoreBackupFlow(context, ref),
+            child: Text(l10n.backup_restore),
           ),
         ],
       ),

@@ -1,5 +1,4 @@
 import 'dart:async' show StreamSubscription, Timer, unawaited;
-import 'dart:typed_data';
 
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
@@ -7,22 +6,23 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/error/result.dart';
-import '../../../shared/providers/connectivity_provider.dart';
+import '../../../shared/providers/locale_provider.dart';
+import '../../inventory/domain/product.dart';
 import '../../inventory/presentation/inventory_controller.dart';
-import '../../scan/domain/scan_candidates.dart';
 import '../../transactions/presentation/sales_providers.dart';
-import '../data/audio_recorder.dart';
+import '../data/speech_capture.dart';
 import '../data/voice_sale_repository.dart';
 import '../domain/voice_decision.dart';
 import '../domain/voice_level.dart';
 import '../domain/voice_line.dart';
 import '../domain/voice_parse_result.dart';
 
+
 enum VoicePhase { idle, listening, thinking, reviewing, error }
 
-/// State for the voice-sale flow: mic recording -> uploaded audio -> parsed ->
-/// reviewable lines. Mirrors the vision-scan controller's shape, with the
-/// ears swapped for a microphone.
+/// State for the voice-sale flow: listening (words appear live) -> parsed on
+/// the phone -> reviewable lines. Mirrors the vision-scan controller's shape,
+/// with the eyes swapped for ears.
 class VoiceSaleState {
   const VoiceSaleState({
     this.phase = VoicePhase.idle,
@@ -53,15 +53,14 @@ class VoiceSaleState {
   /// show until the timer that enforces it actually exists.
   final DateTime? listenDeadline;
 
-  /// True in the `error` phase when the failure happened *after* audio was
-  /// captured, so retrying can re-send that same recording instead of making
-  /// the shopkeeper say the whole sale again. False for failures where nothing
-  /// usable was recorded (mic denied, offline, silence).
+  /// True in the `error` phase when the failure happened *after* words were
+  /// heard, so retrying can re-read them instead of making the shopkeeper say
+  /// the whole sale again. False when nothing usable was heard (mic denied,
+  /// silence).
   final bool canRetryAudio;
 
-  /// The transcript the `parse-sale` function actually worked from (produced
-  /// server-side from the recorded audio), echoed back so a mishear is
-  /// obvious to the user.
+  /// What the phone heard: live while listening, then the transcript the sale
+  /// was read from, so a mishear is obvious to the user.
   final String? heardText;
 
   final List<VoiceLine> lines;
@@ -117,311 +116,206 @@ class VoiceSaleState {
   );
 }
 
-/// Orchestrates record -> stop -> `parse-sale` -> reviewable lines. Never
-/// talks to Supabase directly (that's [VoiceSaleRepository]'s job) and never
-/// builds widgets.
+/// Orchestrates listen -> on-device parse -> reviewable lines. Everything runs
+/// on the phone: speech recognition (on-device first), then the sale parser
+/// against the shop's products and taught words. Never builds widgets.
 class VoiceController extends Notifier<VoiceSaleState> {
   /// Bumped by [startListening] and [reset] to invalidate any in-flight
-  /// recording/parse from a previous session. Every `await` boundary in
-  /// [startListening]/[stopAndParse] re-checks this before touching [state],
-  /// so a result that resolves after the user moved on can never clobber
-  /// fresh state.
+  /// listening/parse from a previous session. Every `await` re-checks it
+  /// before touching [state].
   int _session = 0;
 
-  /// Auto-stop for the current recording. NOT always cancelled before a
-  /// transition out of `listening`: [startListening] sets `phase` to
-  /// `listening` before `await recorder.start()`, and `_capTimer` is only
-  /// armed after `start()` resolves. If the user taps Stop during that
-  /// window, [stopAndParse] sees `phase == listening` and proceeds -- but
-  /// there is no timer yet to cancel, and it does not bump [_session] (it's
-  /// still the same session, just stopped early). When `start()` later
-  /// resolves, [startListening] arms a fresh timer for a session that has
-  /// already moved on. The `state.phase == VoicePhase.listening` guard in
-  /// the timer callback is what actually stops that stale timer from firing
-  /// a spurious second [stopAndParse] -- by the time it fires, the earlier
-  /// stop will have already moved `phase` past `listening`. It is load-bearing,
-  /// not redundant with the `_session` check above it.
+  /// Backstop for the listening cap, in case the recogniser never reports
+  /// that it finished.
   Timer? _capTimer;
 
-  /// Loudness samples for the recording in progress, feeding both the level
-  /// meter (via [micLevelProvider]) and [_detector]. Cancelled wherever
-  /// [_capTimer] is.
   StreamSubscription<double>? _levelSub;
+  StreamSubscription<String>? _partialSub;
 
-  /// Judges when the shopkeeper has finished speaking, so the recording can
-  /// stop itself. Recreated per recording; null outside `listening`.
-  SpeechEndDetector? _detector;
+  /// The last thing heard, kept so "Try again" re-reads it without making
+  /// the shopkeeper repeat the sale.
+  Heard? _lastHeard;
 
-  /// The last captured recording, kept so a failure that happened *after*
-  /// capture can be retried without re-recording. Cleared by [reset] and
-  /// whenever a fresh recording starts.
-  ({Uint8List bytes, String mime})? _lastRecording;
+  /// The one path that ends a listening session: the recogniser reports the
+  /// sentence finished (after a pause, or because Stop was tapped) and this
+  /// reads it. Stop waits on it rather than finishing a second time.
+  Future<void>? _finishing;
 
   @override
   VoiceSaleState build() {
-    ref.onDispose(_stopWatchingLevels);
+    // Keep the catalogue loaded while voice is in use: the parser and the
+    // recogniser's hints both need it the moment the shopkeeper speaks.
+    ref.listen(productsStreamProvider, (_, _) {});
+    ref.onDispose(_stopWatching);
     ref.onDispose(() => _capTimer?.cancel());
     return const VoiceSaleState();
   }
 
+  List<Product> get _products =>
+      ref.read(productsStreamProvider).value ?? const <Product>[];
+
   Future<void> startListening() async {
     final session = ++_session;
-    _lastRecording = null;
+    _lastHeard = null;
 
-    // Checked first, and synchronously: with no network nothing downstream can
-    // possibly succeed, so recording 15 seconds of a shopkeeper's voice only to
-    // then admit we were offline wastes their time and their breath.
-    // [voiceOnlineProvider] fails open, so an unresolved connectivity reading
-    // never blocks a sale.
-    if (!ref.read(voiceOnlineProvider)) {
-      state = state.copyWith(phase: VoicePhase.error, errorMessage: 'offline');
-      return;
-    }
-
-    final recorder = ref.read(audioRecorderProvider);
-    final ok = await recorder.hasPermission();
+    final capture = ref.read(speechCaptureProvider);
+    final ok = await capture.hasPermission();
     if (_session != session) return; // superseded while awaiting permission
-
     if (!ok) {
-      state = state.copyWith(
-        phase: VoicePhase.error,
-        errorMessage: 'micDenied',
-      );
+      state = state.copyWith(phase: VoicePhase.error, errorMessage: 'micDenied');
       return;
     }
 
-    // Warms the recent-sales hint during the seconds the shopkeeper spends
-    // speaking, so [stopAndParse] can read whatever arrived without ever
-    // waiting on it. Not autoDispose, so a plain read keeps the result.
+    // Warm the 30-day sales figures the parser uses to break ties.
     ref.read(recentUnitsSoldProvider);
-
-    // Same idea, for the server: spend the seconds they are talking booting the
-    // Edge Function container, so the cold start is not sitting between "stop"
-    // and the cart appearing. Unawaited on purpose -- recording must never wait
-    // on the network, and [VoiceSaleRepository.warmUp] already swallows
-    // everything.
-    unawaited(ref.read(voiceSaleRepositoryProvider).warmUp());
+    final hints = await ref.read(voiceSaleRepositoryProvider).hints(_products);
+    if (_session != session) return;
 
     state = state.copyWith(phase: VoicePhase.listening);
+    final bn = ref.read(localeProvider).languageCode == 'bn';
     try {
-      await recorder.start();
+      await capture.start(localeId: bn ? 'bn_BD' : 'en_US', hints: hints);
     } catch (_) {
-      // The `record` plugin throws readily (mic held by another app, encoder
-      // failure); nothing was captured, so this is the same user-facing
-      // outcome as "no speech" -- and it's truthful, since nothing was heard.
-      unawaited(recorder.cancel());
-      if (_session != session) return; // superseded while awaiting start()
-      state = state.copyWith(phase: VoicePhase.error, errorMessage: 'noSpeech');
-      return;
-    }
-    if (_session != session) return; // superseded while awaiting start()
-
-    // Only once recording is genuinely live: a buzz for a mic that failed to
-    // open would be a lie the shopkeeper feels before they read the error.
-    ref.read(voiceHapticsProvider).recordingStarted();
-
-    final cap = ref.read(maxRecordingDurationProvider);
-    _capTimer?.cancel();
-    _capTimer = Timer(cap, () {
-      // Both guards matter: the session may have moved on, and the user may
-      // have already stopped manually.
-      if (_session == session && state.phase == VoicePhase.listening) {
-        unawaited(stopAndParse());
-      }
-    });
-    _watchLevels(session);
-    state = state.copyWith(
-      phase: VoicePhase.listening,
-      // `clock.now()`, not `DateTime.now()`: identical in production, but under
-      // fake_async it advances with the same virtual time as the cap Timer, so
-      // the countdown this feeds is testable without a real 15-second wait.
-      listenDeadline: clock.now().add(cap),
-    );
-  }
-
-  /// Subscribes to the recorder's loudness samples for [session]: publishes
-  /// them for the meter and feeds the silence detector, stopping the recording
-  /// once a sentence has clearly finished.
-  void _watchLevels(int session) {
-    _stopWatchingLevels();
-    // A level left over from the previous recording must not flash in the meter
-    // before the first fresh sample arrives.
-    ref.read(micLevelProvider.notifier).clear();
-    final detector = SpeechEndDetector();
-    _detector = detector;
-    _levelSub = ref.read(audioRecorderProvider).levels.listen(
-      (dbfs) {
-        if (_session != session || state.phase != VoicePhase.listening) return;
-        ref.read(micLevelProvider.notifier).report(dbfs);
-        if (!ref.read(autoStopOnSilenceProvider)) return;
-        if (detector.add(dbfs) == SpeechPhase.ended) {
-          unawaited(stopAndParse());
-        }
-      },
-      // A recorder that fails mid-stream must not take the sale down with it;
-      // losing the meter and the auto-stop leaves the duration cap in charge,
-      // which is exactly the behaviour before any of this existed.
-      onError: (_) {},
-    );
-  }
-
-  void _stopWatchingLevels() {
-    _levelSub?.cancel();
-    _levelSub = null;
-    _detector = null;
-  }
-
-  Future<void> stopAndParse() async {
-    // Guards double-tap and stop-before-start.
-    if (state.phase != VoicePhase.listening) return;
-    _capTimer?.cancel();
-    _capTimer = null;
-    final detector = _detector;
-    _stopWatchingLevels();
-    final session = _session;
-
-    ref.read(voiceHapticsProvider).recordingStopped();
-
-    final recorder = ref.read(audioRecorderProvider);
-    ({Uint8List bytes, String mime})? recording;
-    try {
-      recording = await recorder.stop();
-    } catch (_) {
-      // Same reasoning as the start() catch above: a stop() throw means
-      // nothing usable was captured, so it's a "no speech" outcome, not a
-      // crash. No parse call happens.
+      unawaited(capture.cancel());
       if (_session != session) return;
       state = state.copyWith(phase: VoicePhase.error, errorMessage: 'noSpeech');
       return;
     }
     if (_session != session) return;
 
-    if (recording == null) {
+    ref.read(voiceHapticsProvider).recordingStarted();
+    final cap = ref.read(maxRecordingDurationProvider);
+    _capTimer?.cancel();
+    _capTimer = Timer(cap + const Duration(seconds: 2), () {
+      if (_session == session && state.phase == VoicePhase.listening) {
+        unawaited(stopAndParse());
+      }
+    });
+    final deadline = clock.now().add(cap);
+    _watch(capture, session, deadline);
+    state = state.copyWith(
+      phase: VoicePhase.listening,
+      listenDeadline: deadline,
+    );
+
+    // The recogniser ends the sentence itself after a pause.
+    _finishing = capture.done.then((heard) {
+      if (_session == session && state.phase == VoicePhase.listening) {
+        return _finishListening(heard, session);
+      }
+    });
+  }
+
+  void _watch(SpeechCapture capture, int session, DateTime deadline) {
+    _stopWatching();
+    ref.read(micLevelProvider.notifier).clear();
+    _levelSub = capture.levels.listen((level) {
+      if (_session != session || state.phase != VoicePhase.listening) return;
+      ref.read(micLevelProvider.notifier).reportLevel(level);
+    }, onError: (_) {});
+    _partialSub = capture.partials.listen((words) {
+      if (_session != session || state.phase != VoicePhase.listening) return;
+      // Live words while the shopkeeper speaks.
+      state = state.copyWith(
+        phase: VoicePhase.listening,
+        heardText: words,
+        listenDeadline: deadline,
+      );
+    }, onError: (_) {});
+  }
+
+  void _stopWatching() {
+    _levelSub?.cancel();
+    _levelSub = null;
+    _partialSub?.cancel();
+    _partialSub = null;
+  }
+
+  /// Stops listening now (the Stop button) and reads the sale.
+  Future<void> stopAndParse() async {
+    if (state.phase != VoicePhase.listening) return;
+    final session = _session;
+    try {
+      await ref.read(speechCaptureProvider).stop();
+    } catch (_) {
+      if (_session != session || state.phase != VoicePhase.listening) return;
+      _capTimer?.cancel();
+      _stopWatching();
       state = state.copyWith(phase: VoicePhase.error, errorMessage: 'noSpeech');
       return;
     }
-
-    // The microphone delivered measurable samples and not one of them cleared
-    // the absolute silence gate: the mic was muted, covered, or held by another
-    // app. Uploading tens of kilobytes of nothing to be told "I heard nothing"
-    // costs the shopkeeper the full round trip, so answer immediately. Only
-    // fires when samples actually arrived -- see [SpeechEndDetector.capturedNothing].
-    if (detector != null && detector.capturedNothing) {
-      state = state.copyWith(phase: VoicePhase.error, errorMessage: 'tooQuiet');
-      return;
-    }
-
-    _lastRecording = recording;
-    await _parseAudio(recording, session);
+    await _finishing;
   }
 
-  /// Re-sends the recording already in hand. The shopkeeper said the sale once;
-  /// a transport failure or a model hiccup is no reason to make them say it
-  /// again into the same noisy room. Falls back to [reset] when there is
-  /// nothing kept (mic denied, offline, silence -- nothing was ever captured).
+  Future<void> _finishListening(Heard heard, int session) async {
+    _capTimer?.cancel();
+    _capTimer = null;
+    _stopWatching();
+    ref.read(voiceHapticsProvider).recordingStopped();
+    if (heard.isEmpty) {
+      state = state.copyWith(phase: VoicePhase.error, errorMessage: 'noSpeech');
+      return;
+    }
+    _lastHeard = heard;
+    await _parse(heard, session, canRetry: true);
+  }
+
+  /// Re-reads the last thing heard (after a failure), or starts over.
   Future<void> retryLastAudio() async {
-    final recording = _lastRecording;
-    if (recording == null) {
+    final heard = _lastHeard;
+    if (heard == null) {
       reset();
       return;
     }
     _capTimer?.cancel();
     _capTimer = null;
-    _stopWatchingLevels();
-    final session = ++_session; // supersede anything still in flight
-    await _parseAudio(recording, session);
+    _stopWatching();
+    final session = ++_session;
+    await _parse(heard, session, canRetry: true);
   }
 
-  /// Shared tail of [stopAndParse] and [retryLastAudio]: upload, match, and
-  /// land in `reviewing` or `error`. [session] must already be current.
-  Future<void> _parseAudio(
-    ({Uint8List bytes, String mime}) recording,
-    int session,
-  ) async {
-    state = state.copyWith(
-      phase: VoicePhase.thinking,
-      background: state.background,
-    );
-
-    final payload = _candidatePayload();
-    final result = await ref
-        .read(voiceSaleRepositoryProvider)
-        .parse(
-          audioBytes: recording.bytes,
-          audioMime: recording.mime,
-          candidates: payload.candidates,
-        );
-    if (_session != session) return;
-    // The audio is still in hand either way, so a failure here can always be
-    // retried without re-recording.
-    _applyResult(_resolveResult(result, payload), canRetryAudio: true);
-  }
-
-  /// Re-runs parsing on a shopkeeper-edited [transcript] (the text path of
-  /// `parse-sale`), rebuilding the reviewable lines so a single misheard word
-  /// can be fixed without re-recording. Empty input is a no-op.
+  /// Parses typed or corrected text instead of speech.
   Future<void> reparseFromText(String transcript) async {
     _capTimer?.cancel();
     _capTimer = null;
-    _stopWatchingLevels();
+    _stopWatching();
     final text = transcript.trim();
     if (text.isEmpty) return;
-    final session = ++_session; // supersede any in-flight recording/parse
+    final session = ++_session;
+    await _parse(Heard(text), session, canRetry: false);
+  }
+
+  Future<void> _parse(
+    Heard heard,
+    int session, {
+    required bool canRetry,
+  }) async {
     state = state.copyWith(
       phase: VoicePhase.thinking,
+      heardText: heard.text,
       background: state.background,
     );
-
-    final payload = _candidatePayload();
     final result = await ref
         .read(voiceSaleRepositoryProvider)
-        .parseTranscript(transcript: text, candidates: payload.candidates);
+        .parseTranscript(
+          transcript: heard.text,
+          alternatives: heard.alternatives,
+          products: _products,
+          recentUnits: ref.read(recentUnitsSoldProvider).value ?? const {},
+        );
     if (_session != session) return;
-
-    // The shopkeeper typed this sale; offering "retry the recording" here would
-    // throw their correction away, so the audio path stays closed.
     _applyResult(
-      _resolveResult(result, payload),
-      canRetryAudio: false,
-      fallbackHeardText: text,
+      result,
+      canRetryAudio: canRetry,
+      fallbackHeardText: heard.text,
     );
   }
 
-  /// The shop's products as matching candidates, enriched with recent sales
-  /// volume when that lookup has landed. `.value ?? const {}` throughout: this
-  /// runs on the latency-critical path, so missing data degrades the hint and
-  /// never delays the upload.
-  CandidatePayload _candidatePayload() => buildCandidatePayload(
-    ref.read(productsStreamProvider).value ?? const [],
-    includeUnit: true,
-    recentUnits: ref.read(recentUnitsSoldProvider).value,
-  );
-
-  /// Translates a parse result's match identifiers (list indices) back to
-  /// real product ids via [payload], immediately after the response lands and
-  /// before it can reach `state`. Everything downstream -- the review sheet,
-  /// `chosenProductId`, `choose()` -- only ever sees a real id. A failure
-  /// passes through unchanged; there is nothing to resolve.
-  Result<VoiceParseResult> _resolveResult(
-    Result<VoiceParseResult> result,
-    CandidatePayload payload,
-  ) => result.when(
-    success: (v) => Result.success(v.resolveIds(payload.resolve)),
-    failure: (f) => Result.failure(f),
-  );
-
-  /// Lands a parse result in `reviewing` or `error`, uniformly for the audio and
-  /// text paths.
-  ///
-  /// [canRetryAudio] applies only to the *failure* branch -- a transport error
-  /// or a model hiccup, where the same bytes really may succeed on a second
-  /// attempt.
   void _applyResult(
     Result<VoiceParseResult> result, {
     required bool canRetryAudio,
     String? fallbackHeardText,
   }) {
-    // Captured before the transitions below overwrite it.
     final wasBackgrounded = state.background;
 
     result.when(
@@ -437,12 +331,6 @@ class VoiceController extends Notifier<VoiceSaleState> {
           lines: lines,
           errorMessage: lines.isEmpty ? 'noMatch' : null,
           background: wasBackgrounded,
-          // Deliberately false even for `noMatch`. The upload succeeded and the
-          // model gave a real answer -- it just matched nothing in this shop.
-          // Re-sending identical bytes would produce the identical answer, so
-          // offering "try again" there is the same empty promise the error pane
-          // used to make. Typing the sale, or recording it again, are the only
-          // actions that can actually change the outcome.
           canRetryAudio: false,
         );
       },
@@ -454,22 +342,10 @@ class VoiceController extends Notifier<VoiceSaleState> {
       ),
     );
 
-    // Nobody is looking at the screen -- that was the whole point of letting
-    // them walk away -- so the result has to reach them some other way. The
-    // buzz is what turns [VoiceReadyBanner] from something they must notice
-    // into something that tells them to look.
     if (wasBackgrounded) ref.read(voiceHapticsProvider).resultReady();
   }
 
-  /// Debug-only trace of what the model was confident about versus what
-  /// [VoiceThresholds] then did with it.
-  ///
-  /// The thresholds shipped as estimates -- 0.80 to pre-fill, a 0.15 lead over
-  /// the runner-up -- and were never checked against real speech. Calibrating
-  /// them is a measuring job, not a coding one: run real sales, watch how often
-  /// a confident-and-correct top match still landed in `ambiguous` (thresholds
-  /// too strict) or a wrong one got pre-filled (too loose), then override
-  /// [voiceThresholdsProvider]. This line is the measurement.
+  /// Debug-only: what the parser was sure of, to tune [VoiceThresholds].
   void _logCalibration(VoiceParseResult parsed, List<VoiceLine> lines) {
     if (!kDebugMode) return;
     for (var i = 0; i < parsed.items.length && i < lines.length; i++) {
@@ -479,14 +355,29 @@ class VoiceController extends Notifier<VoiceSaleState> {
       final second = ranked.length > 1 ? ranked[1].confidence : null;
       debugPrint(
         'voice-calibration: heard="${parsed.items[i].heard}" '
-        'status=${lines[i].status.name} top=$top runnerUp=$second '
-        'lead=${top != null && second != null ? (top - second).toStringAsFixed(2) : 'n/a'}',
+        'status=${lines[i].status.name} top=$top runnerUp=$second',
       );
     }
   }
 
-  void choose(int index, String productId) =>
-      _replace(index, state.lines[index].chooseProduct(productId));
+  /// The shopkeeper settled a line. When they picked the product themselves
+  /// (it was unsure, unknown, or they changed it), the words they used are
+  /// taught as an alias so next time those words find it straight away.
+  void choose(int index, String productId) {
+    final line = state.lines[index];
+    final autoPicked =
+        line.status == VoiceLineStatus.resolved &&
+        line.choices.isNotEmpty &&
+        line.choices.first.productId == productId;
+    final phrase = line.phrase;
+    if (!autoPicked && phrase != null && phrase.trim().isNotEmpty) {
+      ref
+          .read(voiceSaleRepositoryProvider)
+          .learnAlias(productId, phrase)
+          .ignore();
+    }
+    _replace(index, line.chooseProduct(productId));
+  }
 
   void setQuantity(int index, double quantity) =>
       _replace(index, state.lines[index].withQuantity(quantity));
@@ -494,15 +385,8 @@ class VoiceController extends Notifier<VoiceSaleState> {
   void removeLine(int index) =>
       state = state.copyWith(lines: removeLineAt(state.lines, index));
 
-  /// Called whenever the sheet goes away, by any route.
-  ///
-  /// A parse still in flight is deliberately NOT cancelled: the shopkeeper has
-  /// already spoken the sale and is now serving the customer, so throwing the
-  /// work away would make them say it all again. The session is left alone
-  /// (cancelling it is what [reset] does, and that is exactly what must not
-  /// happen here) and the result is announced by [VoiceReadyBanner] instead.
-  ///
-  /// Every other phase is a genuine dismissal, so it resets as before.
+  /// The sheet was dismissed. A sale still being read carries on in the
+  /// background ([VoiceReadyBanner] is its handle); anything else resets.
   void releaseSheet() {
     if (state.phase == VoicePhase.thinking) {
       state = state.copyWith(phase: VoicePhase.thinking, background: true);
@@ -511,9 +395,6 @@ class VoiceController extends Notifier<VoiceSaleState> {
     reset();
   }
 
-  /// Hands a backgrounded result back to a freshly opened sheet: clears the
-  /// flag so [VoiceReadyBanner] stops offering what is now on screen, without
-  /// disturbing the parsed lines the sheet is about to render.
   void resumeFromBackground() {
     if (!state.background) return;
     state = state.copyWith(
@@ -526,12 +407,10 @@ class VoiceController extends Notifier<VoiceSaleState> {
   void reset() {
     _capTimer?.cancel();
     _capTimer = null;
-    _stopWatchingLevels();
-    _lastRecording = null;
+    _stopWatching();
+    _lastHeard = null;
     _session++;
-    // Fire-and-forget: a user backing out mid-recording must actually stop
-    // the mic, but reset() itself stays synchronous.
-    unawaited(ref.read(audioRecorderProvider).cancel());
+    unawaited(ref.read(speechCaptureProvider).cancel());
     state = const VoiceSaleState();
   }
 
@@ -545,30 +424,16 @@ class VoiceController extends Notifier<VoiceSaleState> {
 final voiceControllerProvider =
     NotifierProvider<VoiceController, VoiceSaleState>(VoiceController.new);
 
-/// How long a single recording may run before it auto-stops and parses.
-/// Unbounded clips are a real latency risk: in a noisy shop people repeat
-/// themselves, and every extra second is more to upload and more for the model
-/// to transcribe. A provider (not a bare constant) so tests can shorten it.
+/// How long one sale sentence may run before listening stops by itself.
+/// A provider (not a bare constant) so tests can shorten it.
 final maxRecordingDurationProvider = Provider<Duration>(
-  (ref) => const Duration(seconds: 15),
+  (ref) => DeviceSpeechCapture.listenFor,
 );
 
 /// How long before [maxRecordingDurationProvider] elapses the listening pane
 /// starts counting down. Long enough to finish a sentence, short enough that the
 /// warning is not on screen for most of a normal recording.
 const autoStopWarning = Duration(seconds: 5);
-
-/// Whether the device currently has a usable network interface, as a plain
-/// synchronous bool.
-///
-/// Exists so the recording path never has to reason about `AsyncValue`: it
-/// **fails open**, reporting online whenever connectivity is still loading or
-/// errored, matching `AuthController`'s idiom. Being wrong in that direction
-/// costs a wasted upload; being wrong the other way would refuse to record for a
-/// shopkeeper whose connection is fine.
-final voiceOnlineProvider = Provider<bool>(
-  (ref) => ref.watch(isOnlineProvider).value ?? true,
-);
 
 /// Whether a recording stops itself once the shopkeeper stops speaking. A
 /// provider so it can be turned off wholesale if silence detection ever proves
@@ -594,6 +459,9 @@ class MicLevel extends Notifier<double> {
 
   /// Publishes one raw dBFS reading from the recorder.
   void report(double dbfs) => state = normalizeMicLevel(dbfs);
+
+  /// A level already on the 0..1 scale (the speech recogniser's).
+  void reportLevel(double level) => state = level.clamp(0.0, 1.0);
 
   void clear() => state = 0;
 }

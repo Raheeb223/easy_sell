@@ -1,115 +1,128 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sqflite/sqflite.dart' show ConflictAlgorithm;
 
+import '../../../core/db/app_database.dart';
 import '../../../core/error/failure.dart';
 import '../../../core/error/result.dart';
-import '../../../shared/providers/supabase_provider.dart';
+import '../../inventory/domain/product.dart';
+import '../domain/sale_parser.dart';
 import '../domain/voice_parse_result.dart';
 
-/// Maps transport errors to user-facing failures. Top-level so it is directly
-/// unit-testable without constructing a Supabase client.
-Failure mapVoiceFailure(Object e) {
-  if (e is FunctionException || e is TimeoutException) {
-    return const DatabaseFailure(
-      'Could not understand that right now. Please try again.',
-    );
-  }
-  if (e is SocketException) {
-    return const NetworkFailure('No internet connection. Please try again.');
-  }
-  return const UnexpectedFailure('Something went wrong. Please try again.');
-}
-
-/// Calls the `parse-sale` Edge Function with recorded audio. The gateway now
-/// transcribes (Gemini) and parses (GPT) server-side, so the phone just ships
-/// the raw recording (spec §0.1) plus the shop's own products as matching
-/// candidates -- no on-device transcription happens anymore.
+/// Understands a spoken sale on the phone (design §6): the on-device parser
+/// against the shop's products and the words this shop has taught it.
+/// Replaces the Gemini `parse-sale` function; no network, a few ms.
 class VoiceSaleRepository {
-  VoiceSaleRepository(this._client);
+  VoiceSaleRepository(this._db);
 
-  final SupabaseClient _client;
+  final AppDatabase _db;
 
-  /// Fire-and-forget nudge that gets `parse-sale` running *before* there is
-  /// anything to send it.
-  ///
-  /// Edge Functions are scaled to zero when idle, so the first call after a
-  /// quiet spell pays a container cold start on top of the model time. Today
-  /// that cost lands entirely after the shopkeeper stops speaking, which is the
-  /// one moment they are actively waiting. Sending a throwaway request when
-  /// recording *starts* moves it into the seconds they spend talking, which
-  /// were dead time anyway.
-  ///
-  /// `{'ping': true}` short-circuits server-side before any Gemini call, so a
-  /// warm-up costs no tokens. Deliberately total: this is pure optimization, so
-  /// every failure -- offline, a deploy that predates the ping branch, a
-  /// timeout -- must be swallowed. Nothing downstream may depend on it, and the
-  /// real [parse] call behaves identically whether or not this ever landed.
-  Future<void> warmUp() async {
-    try {
-      await _client.functions
-          .invoke('parse-sale', body: {'ping': true})
-          .timeout(const Duration(seconds: 5));
-    } catch (_) {
-      // Intentionally empty -- see the doc comment above.
-    }
-  }
-
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) async {
-    try {
-      final res = await _client.functions
-          .invoke(
-            'parse-sale',
-            body: {
-              'audio_base64': base64Encode(audioBytes),
-              'audio_mime': audioMime,
-              'candidates': candidates,
-            },
-          )
-          .timeout(const Duration(seconds: 30));
-      final data = res.data;
-      final map = data is String ? jsonDecode(data) : data;
-      return Result.success(
-        VoiceParseResult.fromJson(Map<String, dynamic>.from(map as Map)),
-      );
-    } catch (e) {
-      return Result.failure(mapVoiceFailure(e));
-    }
-  }
-
-  /// Re-parses an edited transcript through the same `parse-sale` function,
-  /// using its text path instead of audio. Lets the shopkeeper fix a mishear
-  /// and get freshly matched line items without re-recording.
+  /// Parses [transcript] (and the recogniser's [alternatives]) against
+  /// [products]. [recentUnits] (last 30 days) only break real ties.
   Future<Result<VoiceParseResult>> parseTranscript({
     required String transcript,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
+    List<String> alternatives = const [],
+    Map<String, double> recentUnits = const {},
   }) async {
     try {
-      final res = await _client.functions
-          .invoke(
-            'parse-sale',
-            body: {'transcript': transcript, 'candidates': candidates},
-          )
-          .timeout(const Duration(seconds: 30));
-      final data = res.data;
-      final map = data is String ? jsonDecode(data) : data;
-      return Result.success(
-        VoiceParseResult.fromJson(Map<String, dynamic>.from(map as Map)),
+      final aliases = await _aliases();
+      final parser = SaleParser(
+        products: [
+          for (final p in products)
+            ParserProduct(
+              id: p.id,
+              name: p.name,
+              brand: p.brand,
+              variant: p.variant,
+              unit: p.unit.name,
+              aliases: aliases[p.id] ?? const [],
+            ),
+        ],
+        recentUnits: recentUnits,
       );
-    } catch (e) {
-      return Result.failure(mapVoiceFailure(e));
+      return Result.success(
+        parser.parse(transcript, alternatives: alternatives),
+      );
+    } catch (_) {
+      return const Result.failure(
+        UnexpectedFailure('Could not understand that. Please try again.'),
+      );
     }
+  }
+
+  /// Phrases to bias the recogniser toward: product names and taught words.
+  Future<List<String>> hints(List<Product> products) async {
+    final aliases = await _aliases();
+    return {
+      for (final p in products) ...[
+        p.name,
+        if (p.brand != null && p.brand!.isNotEmpty) p.brand!,
+        ...?aliases[p.id],
+      ],
+    }.toList();
+  }
+
+  /// The shopkeeper said [phrase] and meant [productId]: remember it, so the
+  /// same words find that product straight away next time (design §5a).
+  Future<void> learnAlias(String productId, String phrase) async {
+    final norm = normalizePhrase(phrase);
+    if (norm.isEmpty || norm.length > 60) return;
+    final now = nowMicros();
+    await _db.db.transaction((txn) async {
+      final updated = await txn.rawUpdate(
+        'UPDATE product_aliases SET hits = hits + 1, updated_at = ? '
+        'WHERE product_id = ? AND phrase_normalized = ?',
+        [now, productId, norm],
+      );
+      if (updated == 0) {
+        await txn.insert('product_aliases', {
+          'id': newId(),
+          'product_id': productId,
+          'phrase': phrase.trim(),
+          'phrase_normalized': norm,
+          'created_at': now,
+          'updated_at': now,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      // The same words now mean this product: drop them from any other.
+      await txn.delete(
+        'product_aliases',
+        where: 'phrase_normalized = ? AND product_id != ?',
+        whereArgs: [norm, productId],
+      );
+    });
+    _cache = null;
+    _db.notify({'product_aliases'});
+  }
+
+  Map<String, List<String>>? _cache;
+
+  void invalidate() => _cache = null;
+
+  Future<Map<String, List<String>>> _aliases() async {
+    final cached = _cache;
+    if (cached != null) return cached;
+    final rows = await _db.db.query(
+      'product_aliases',
+      columns: ['product_id', 'phrase'],
+    );
+    final out = <String, List<String>>{};
+    for (final r in rows) {
+      out.putIfAbsent(r['product_id']! as String, () => []).add(
+        r['phrase']! as String,
+      );
+    }
+    return _cache = out;
   }
 }
 
 final voiceSaleRepositoryProvider = Provider<VoiceSaleRepository>((ref) {
-  return VoiceSaleRepository(ref.watch(supabaseClientProvider));
+  final db = ref.watch(appDatabaseProvider);
+  final repo = VoiceSaleRepository(db);
+  // A restored backup brings its own taught words.
+  final sub = db
+      .watch({'product_aliases'}, () async => null)
+      .listen((_) => repo.invalidate());
+  ref.onDispose(sub.cancel);
+  return repo;
 });

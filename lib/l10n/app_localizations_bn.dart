@@ -1841,4 +1841,151 @@ class AppLocalizationsBn extends AppLocalizations {
 
   @override
   String get finance_tipsError => 'এখন পরামর্শ আনা যায়নি।';
+
+  @override
+  String finance_tipOverdue(String name, String amount) {
+    return 'এই সপ্তাহে $name-এর কাছে যান বা ফোন করুন, বাকি $amount থেকে কিছু আদায় করুন।';
+  }
+
+  @override
+  String finance_tipCashShort(String amount) {
+    return 'এই সপ্তাহে কম করে রিস্টক করুন: রিস্টকের খরচ আসা টাকার চেয়ে $amount বেশি।';
+  }
+
+  @override
+  String finance_tipCreditGrowing(String total) {
+    return 'এই সপ্তাহে নতুন বাকি কম দিন, আগে পুরনো বাকি আদায় করুন। এখন মোট বাকি $total।';
+  }
+
+  @override
+  String finance_tipSalesDrop(String percent) {
+    return 'বিক্রি $percent কমেছে। কোন মাল শেষ হয়ে গেছে দেখুন, বেশি বিক্রির মাল আগে আনুন।';
+  }
+
+  @override
+  String finance_tipCollectEarly(String amount) {
+    return 'গ্রাহকদের কাছে বাকি $amount পুরনো হওয়ার আগেই আদায় করুন। অল্প অল্প করে নিয়মিত তোলা সহজ।';
+  }
+
+  @override
+  String get finance_tipGoDigital =>
+      'গ্রাহকদের বেশি করে মোবাইল ওয়ালেটে টাকা দিতে বলুন। ডিজিটাল বিক্রির হিসাব ঋণদাতারা বেশি বিশ্বাস করে।';
+
+  @override
+  String finance_tipFinancing(String option) {
+    return '$option আপনার দোকানের কাজে আসতে পারে। সিদ্ধান্ত নেওয়ার আগে ঋণদাতার শর্ত মিলিয়ে দেখুন।';
+  }
+
+  @override
+  String get finance_tipKeepRecording =>
+      'প্রতিটি বিক্রি আর রিস্টক অ্যাপে তুলে রাখুন, তাহলে টাকার হিসাব ঠিক থাকবে।';
+
+  @override
+  String get backup_section => 'আপনার ডেটা';
+
+  @override
+  String get backup_now => 'এখনই ব্যাকআপ নিন';
+
+  @override
+  String get backup_never =>
+      'কখনো ব্যাকআপ নেওয়া হয়নি। আপনার দোকানের সব হিসাব শুধু এই ফোনে আছে।';
+
+  @override
+  String backup_daysAgo(int days) {
+    final intl.NumberFormat daysNumberFormat = intl.NumberFormat.decimalPattern(
+      localeName,
+    );
+    final String daysString = daysNumberFormat.format(days);
+
+    String _temp0 = intl.Intl.pluralLogic(
+      days,
+      locale: localeName,
+      other: 'শেষ ব্যাকআপ: $daysString দিন আগে',
+      one: 'শেষ ব্যাকআপ: গতকাল',
+      zero: 'শেষ ব্যাকআপ: আজ',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get backup_restore => 'ব্যাকআপ ফেরত আনুন';
+
+  @override
+  String get backup_restoreSub => 'ব্যাকআপ ফাইল থেকে দোকানের হিসাব ফেরত আনুন';
+
+  @override
+  String get backup_restoreConfirmTitle => 'এই ফোনের সব হিসাব বদলে দেবেন?';
+
+  @override
+  String backup_restoreConfirmBody(
+    String shop,
+    int products,
+    int sales,
+    String date,
+  ) {
+    final intl.NumberFormat productsNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String productsString = productsNumberFormat.format(products);
+    final intl.NumberFormat salesNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String salesString = salesNumberFormat.format(sales);
+
+    return '$shop-এর এই ব্যাকআপে $productsStringটি পণ্য আর $salesStringটি বিক্রি আছে, তৈরি $date। এই ফোনের এখনকার সব হিসাব বদলে যাবে।';
+  }
+
+  @override
+  String get backup_restoreButton => 'ফেরত আনুন';
+
+  @override
+  String get backup_restored => 'ব্যাকআপ থেকে দোকান ফেরত আনা হয়েছে';
+
+  @override
+  String get backup_failed => 'শেষ করা যায়নি। আবার চেষ্টা করুন।';
+
+  @override
+  String get backup_notBackup => 'এই ফাইলটি EasySell ব্যাকআপ নয়।';
+
+  @override
+  String get backup_shareSubject => 'EasySell দোকানের ব্যাকআপ';
+
+  @override
+  String get teach_title => 'স্ক্যানের জন্য ছবি';
+
+  @override
+  String get teach_none =>
+      'বিভিন্ন দিক থেকে ২–৩টি ছবি তুলুন, তাহলে লেবেল ছাড়াও স্ক্যান এই পণ্যটি চিনবে।';
+
+  @override
+  String teach_count(int count) {
+    final intl.NumberFormat countNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String countString = countNumberFormat.format(count);
+
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          'স্ক্যান এই পণ্যটি $countStringটি ছবি থেকে চেনে। প্রতিটি স্ক্যান করা বিক্রি থেকে আরও শেখে।',
+      one: 'স্ক্যান এই পণ্যটি ১টি ছবি থেকে চেনে। অন্য দিক থেকে আরেকটি তুলুন।',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get teach_add => 'ছবি তুলুন';
+
+  @override
+  String get teach_learning => 'শিখছে…';
+
+  @override
+  String get teach_failed => 'এই ছবি থেকে শেখা যায়নি। আবার চেষ্টা করুন।';
+
+  @override
+  String get teach_removeTitle => 'এই ছবিটি সরাবেন?';
+
+  @override
+  String get teach_remove => 'সরান';
+
+  @override
+  String get teach_fromScan => 'স্ক্যান থেকে শেখা';
 }

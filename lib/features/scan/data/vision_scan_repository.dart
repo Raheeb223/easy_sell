@@ -1,75 +1,118 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/error/failure.dart';
 import '../../../core/error/result.dart';
-import '../../../shared/providers/supabase_provider.dart';
+import '../../../core/matching/product_matcher.dart';
+import '../../inventory/domain/product.dart';
 import '../domain/recognition_result.dart';
+import '../domain/scan_fusion.dart';
+import 'embedding_store.dart';
+import 'label_reader.dart';
+import 'vision_embedder.dart';
 
-/// Backstop for a `recognize-product` call that never comes back.
-///
-/// Must sit comfortably above the Edge Function's own Gemini abort so the
-/// server's fast, honest 502 always arrives before the client gives up --
-/// otherwise the client timeout masks it and the user sees a generic hang
-/// instead of a real error. Larger than the voice budget because a JPEG is a
-/// much bigger upload than 15 seconds of 32kbps mono audio.
-const scanRequestTimeout = Duration(seconds: 45);
-
-/// Maps transport errors to user-facing failures. Top-level (not a private
-/// method) so it is directly unit-testable without constructing a Supabase
-/// client -- the same reasoning as `mapVoiceFailure`.
-Failure mapScanFailure(Object e) {
-  // TimeoutException covers both our own [scanRequestTimeout] and the Edge
-  // Function aborting its Gemini call: both mean "no answer this time, try
-  // again", which is exactly what a FunctionException means to the user.
-  if (e is FunctionException || e is TimeoutException) {
-    return const DatabaseFailure(
-      'Could not recognize the product. Please try again.',
-    );
-  }
-  if (e is SocketException) {
-    return const NetworkFailure('No internet connection. Please try again.');
-  }
-  return const UnexpectedFailure('Something went wrong. Please try again.');
+/// A recognition plus the photo's fingerprint, so a confirmed scan can teach
+/// the model (design §5a.4).
+class ScanRecognition {
+  const ScanRecognition(this.result, this.embedding);
+  final RecognitionResult result;
+  final Embedding? embedding;
 }
 
-/// Calls the `recognize-product` Edge Function, which holds the API keys and
-/// picks the vision provider server-side. Returns a normalized result.
+/// Recognises a product photo entirely on the phone: EasySell Vision compares
+/// the photo with the shop's taught products while ML Kit reads the label,
+/// and the two are fused (design §5, §5a). Replaces the Gemini
+/// `recognize-product` function; no network, typically well under a second.
 class VisionScanRepository {
-  VisionScanRepository(this._client);
+  VisionScanRepository(this._embedder, this._store, this._reader);
 
-  final SupabaseClient _client;
+  final Future<VisionEmbedder> _embedder;
+  final EmbeddingStore _store;
+  final LabelReader _reader;
 
-  Future<Result<RecognitionResult>> recognize({
+  List<Product>? _matcherFor;
+  ProductMatcher? _matcher;
+
+  Future<Result<ScanRecognition>> recognize({
     required Uint8List imageBytes,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
   }) async {
     try {
-      final res = await _client.functions
-          .invoke(
-            'recognize-product',
-            body: {
-              'image_base64': base64Encode(imageBytes),
-              'candidates': candidates,
-            },
-          )
-          .timeout(scanRequestTimeout);
-      final data = res.data;
-      final map = data is String ? jsonDecode(data) : data;
-      return Result.success(
-        RecognitionResult.fromJson(Map<String, dynamic>.from(map as Map)),
+      final photoF = _photo(imageBytes);
+      final labelF = _label(imageBytes);
+      final embedding = await photoF;
+      final label = await labelF;
+
+      final photo = embedding == null
+          ? const <String, double>{}
+          : await _store.similarities(embedding.vector);
+      final text = <String, double>{
+        if (label.text.isNotEmpty)
+          for (final s in _matcherOf(products).rank(label.text))
+            s.id: s.score,
+      };
+      final result = fuseScan(
+        productIds: products.map((p) => p.id),
+        photo: photo,
+        text: text,
+        photoAvailable: embedding != null,
+        readName: label.headline,
+        readSize: QueryText.findSize(label.text),
       );
+      return Result.success(ScanRecognition(result, embedding));
     } catch (e) {
-      return Result.failure(mapScanFailure(e));
+      return const Result.failure(
+        UnexpectedFailure('Could not recognize the product. Please try again.'),
+      );
     }
   }
+
+  /// The fingerprint, or null if the model could not run (the scan then
+  /// falls back to label text alone).
+  Future<Embedding?> _photo(Uint8List jpeg) async {
+    try {
+      return await (await _embedder).embedJpeg(jpeg);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<LabelText> _label(Uint8List jpeg) async {
+    try {
+      return await _reader.read(jpeg);
+    } catch (_) {
+      return LabelText.empty;
+    }
+  }
+
+  ProductMatcher _matcherOf(List<Product> products) {
+    if (!identical(products, _matcherFor) || _matcher == null) {
+      _matcherFor = products;
+      _matcher = ProductMatcher([
+        for (final p in products)
+          MatchTarget.of(
+            id: p.id,
+            name: p.name,
+            brand: p.brand,
+            variant: p.variant,
+          ),
+      ]);
+    }
+    return _matcher!;
+  }
+
+  /// Teaches the model that [embedding] is [productId] (a confirmed scan).
+  Future<void> learn(String productId, Embedding embedding) =>
+      _store.learn(productId, embedding, source: 'scan');
 }
 
 final visionScanRepositoryProvider = Provider<VisionScanRepository>((ref) {
-  return VisionScanRepository(ref.watch(supabaseClientProvider));
+  final reader = LabelReader();
+  ref.onDispose(reader.close);
+  return VisionScanRepository(
+    ref.watch(visionEmbedderProvider.future),
+    ref.watch(embeddingStoreProvider),
+    reader,
+  );
 });

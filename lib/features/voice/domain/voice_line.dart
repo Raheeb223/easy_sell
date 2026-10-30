@@ -11,7 +11,12 @@ class VoiceLine {
     required this.status,
     required List<VoiceMatch> choices,
     this.chosenProductId,
+    this.phrase,
   }) : choices = List.unmodifiable(choices);
+
+  /// The product words alone; taught as an alias when the shopkeeper picks
+  /// the product themselves.
+  final String? phrase;
 
   final String heard;
   final double quantity;
@@ -38,6 +43,7 @@ class VoiceLine {
     status: status,
     choices: choices,
     chosenProductId: productId,
+    phrase: phrase,
   );
 
   VoiceLine withQuantity(double newQuantity) => VoiceLine(
@@ -48,6 +54,7 @@ class VoiceLine {
     status: status,
     choices: choices,
     chosenProductId: chosenProductId,
+    phrase: phrase,
   );
 }
 
@@ -70,6 +77,7 @@ List<VoiceLine> buildVoiceLines(
         chosenProductId: d.status == VoiceLineStatus.resolved
             ? d.choices.single.productId
             : null,
+        phrase: item.phrase,
       );
     }(),
 ];

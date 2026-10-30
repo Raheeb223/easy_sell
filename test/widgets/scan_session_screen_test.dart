@@ -14,6 +14,8 @@ import 'package:ai_shopkeeper/l10n/app_localizations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/scan_fakes.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -35,11 +37,11 @@ const _outOfStock = Product(
   unit: ProductUnit.pcs,
 );
 
-class _InstantRepo implements VisionScanRepository {
+class _InstantRepo extends IndexedScanRepo {
   @override
-  Future<Result<RecognitionResult>> recognize({
+  Future<Result<RecognitionResult>> recognizeIndexed({
     required Uint8List imageBytes,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
   }) async => Result.success(
     const RecognitionResult(
       status: RecognitionStatus.match,

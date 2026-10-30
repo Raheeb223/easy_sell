@@ -16,6 +16,7 @@ import 'finance_providers.dart';
 import 'finance_text.dart';
 import 'money_tips_controller.dart';
 import 'money_tips_facts.dart';
+import 'money_tips_rules.dart';
 
 /// Home's "Money health" card (spec §6): the last 7 days' money in / out /
 /// net, up to three warnings and how many financing options fit.
@@ -140,7 +141,10 @@ class MoneyTipsSection extends ConsumerWidget {
     final state = ref.watch(moneyTipsProvider);
     void ask() => ref
         .read(moneyTipsProvider.notifier)
-        .ask(key: key, lang: lang, facts: facts);
+        .ask(
+          key: key,
+          tips: moneyTips(health: health, l10n: l10n, currency: currency),
+        );
 
     final askButton = Align(
       alignment: Alignment.centerLeft,

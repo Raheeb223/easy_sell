@@ -15,6 +15,7 @@ import '../../auth/data/auth_repository.dart';
 import '../../cart/presentation/add_to_cart_sheet.dart';
 import '../../expiry/presentation/deliveries_section.dart';
 import '../../expiry/presentation/expiry_providers.dart';
+import '../../scan/presentation/teach_photos_section.dart';
 import '../../transactions/presentation/transaction_confirmation_sheet.dart';
 import '../domain/product.dart';
 import 'category_controller.dart';
@@ -361,6 +362,7 @@ class _DetailView extends ConsumerWidget {
               ],
             ),
           ),
+          TeachPhotosSection(product: product),
           DeliveriesSection(product: product),
         ],
       ),

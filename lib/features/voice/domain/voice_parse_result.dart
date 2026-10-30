@@ -30,7 +30,12 @@ class VoiceItem {
     required this.quantityAssumed,
     this.unitHeard,
     this.matches = const <VoiceMatch>[],
+    this.phrase,
   });
+
+  /// The words that named the product, without the quantity ("pepsi" from
+  /// "2 ta pepsi"). What a correction teaches as an alias.
+  final String? phrase;
 
   /// The fragment of speech this line came from, e.g. "pepsi 1 litre". Size
   /// words live HERE (they identify the product); counts live in [quantity].
@@ -91,6 +96,7 @@ class VoiceItem {
     quantityAssumed: quantityAssumed,
     unitHeard: unitHeard,
     matches: matches,
+    phrase: phrase,
   );
 }
 

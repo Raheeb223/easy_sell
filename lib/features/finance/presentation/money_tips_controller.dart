@@ -4,11 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../expiry/domain/expiry_dates.dart';
-import '../data/money_tips_repository.dart';
 
-/// Which tips these are for: the day, the language and every number Gemini
-/// was shown. A new sale changes the numbers, so old advice is not passed off
-/// as current -- the card offers to ask again instead.
+/// Which tips these are for: the day, the language and every number the tips
+/// were worked out from. A new sale changes the numbers, so old advice is not
+/// passed off as current -- the card offers to ask again instead.
 String moneyTipsKey(DateTime today, String lang, Map<String, dynamic> facts) =>
     '${ymd(today)}|$lang|${jsonEncode(facts)}';
 
@@ -41,9 +40,9 @@ class TipsFailed extends MoneyTipsState {
 
 const _kCache = 'money_tips_cache';
 
-/// Gemini is only called when the seller taps, and never twice for the same
-/// key: the last answer is kept on the phone, so reopening the app the same
-/// day with the same numbers shows it again for free.
+/// Tips are worked out on the phone when the seller taps (`moneyTips`, no
+/// network). The last answer is kept, so reopening the app the same day with
+/// the same numbers shows it again.
 class MoneyTipsController extends Notifier<MoneyTipsState> {
   @override
   MoneyTipsState build() {
@@ -65,24 +64,14 @@ class MoneyTipsController extends Notifier<MoneyTipsState> {
     }
   }
 
-  Future<void> ask({
-    required String key,
-    required String lang,
-    required Map<String, dynamic> facts,
-  }) async {
-    if (state is TipsLoading) return;
+  void ask({required String key, required List<String> tips}) {
     if (state case TipsReady(key: final k) when k == key) return;
-    state = TipsLoading(key);
-    final r = await ref
-        .read(moneyTipsRepositoryProvider)
-        .fetch(lang: lang, facts: facts);
-    r.when(
-      success: (tips) {
-        state = TipsReady(key, tips);
-        _save(key, tips);
-      },
-      failure: (_) => state = TipsFailed(key),
-    );
+    if (tips.isEmpty) {
+      state = TipsFailed(key);
+      return;
+    }
+    state = TipsReady(key, tips);
+    _save(key, tips);
   }
 
   Future<void> _save(String key, List<String> tips) async {

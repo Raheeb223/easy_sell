@@ -16,6 +16,8 @@ import 'package:ai_shopkeeper/features/scan/presentation/scan_session_controller
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/scan_fakes.dart';
+
 const _pepsi = Product(
   id: 'p-pepsi',
   shopId: 's1',
@@ -37,14 +39,14 @@ const _catalog = [_pepsi, _rice];
 
 /// Recognition the test drives by hand: each call parks on a completer so the
 /// test controls exactly when (and in what order) answers land.
-class _ScriptedRepo implements VisionScanRepository {
+class _ScriptedRepo extends IndexedScanRepo {
   final pending = <Completer<Result<RecognitionResult>>>[];
   int calls = 0;
 
   @override
-  Future<Result<RecognitionResult>> recognize({
+  Future<Result<RecognitionResult>> recognizeIndexed({
     required Uint8List imageBytes,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
   }) {
     calls++;
     final c = Completer<Result<RecognitionResult>>();
@@ -58,13 +60,13 @@ class _ScriptedRepo implements VisionScanRepository {
 /// catches internally) but nothing in the type system enforces. Regression
 /// coverage for the "one bad chip never kills the session" rule applying to
 /// a rejected future exactly as much as to a `Result.failure`.
-class _ThrowingRepo implements VisionScanRepository {
+class _ThrowingRepo extends IndexedScanRepo {
   int calls = 0;
 
   @override
-  Future<Result<RecognitionResult>> recognize({
+  Future<Result<RecognitionResult>> recognizeIndexed({
     required Uint8List imageBytes,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
   }) async {
     calls++;
     throw StateError('boom');

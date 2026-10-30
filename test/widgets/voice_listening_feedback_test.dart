@@ -1,11 +1,11 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/config/theme.dart';
 import 'package:ai_shopkeeper/core/error/failure.dart';
 import 'package:ai_shopkeeper/core/error/result.dart';
+import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_controller.dart';
-import 'package:ai_shopkeeper/features/voice/data/audio_recorder.dart';
+import 'package:ai_shopkeeper/features/voice/data/speech_capture.dart';
 import 'package:ai_shopkeeper/features/voice/data/voice_sale_repository.dart';
 import 'package:ai_shopkeeper/features/voice/domain/voice_parse_result.dart';
 import 'package:ai_shopkeeper/features/voice/presentation/voice_controller.dart';
@@ -17,76 +17,47 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/voice_fakes.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-class _FakeRecorder implements AudioRecorderPort {
-  final levelController = StreamController<double>.broadcast();
-
-  @override
-  Stream<double> get levels => levelController.stream;
-
-  @override
-  Future<bool> hasPermission() async => true;
-  @override
-  Future<void> start() async {}
-  @override
-  Future<({Uint8List bytes, String mime})?> stop() async =>
-      (bytes: Uint8List.fromList(const [1]), mime: 'audio/m4a');
-  @override
-  Future<void> cancel() async {}
-  @override
-  Future<void> dispose() async => levelController.close();
-}
-
-/// Fails the first audio parse (like a noisy-room timeout) and succeeds after,
-/// so the "retry the same recording" path can be exercised end to end.
-class _FlakyRepo implements VoiceSaleRepository {
-  // Fire-and-forget optimization with no observable effect on parsing.
-  @override
-  Future<void> warmUp() async {}
-
+/// Fails the first parse, then succeeds; records what it was asked.
+class _FlakyRepo extends FakeVoiceRepo {
   _FlakyRepo(this.success);
 
   final Result<VoiceParseResult> success;
-  int audioCalls = 0;
-  final audioBytesSeen = <Uint8List>[];
+  final transcriptsSeen = <String>[];
 
-  @override
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) async {
-    audioBytesSeen.add(audioBytes);
-    return ++audioCalls == 1
-        ? const Result<VoiceParseResult>.failure(
-            DatabaseFailure(
-              'Could not understand that right now. Please try again.',
-            ),
-          )
-        : success;
-  }
+  int get audioCalls => parseCalls;
 
   @override
   Future<Result<VoiceParseResult>> parseTranscript({
     required String transcript,
-    required List<Map<String, dynamic>> candidates,
-  }) async => success;
+    required List<Product> products,
+    List<String> alternatives = const [],
+    Map<String, double> recentUnits = const {},
+  }) async {
+    transcriptsSeen.add(transcript);
+    await super.parseTranscript(transcript: transcript, products: products);
+    return parseCalls == 1
+        ? const Result<VoiceParseResult>.failure(
+            DatabaseFailure('Could not understand that. Please try again.'),
+          )
+        : resolveVoiceIndexes(success, products);
+  }
 }
 
 ProviderContainer _container({
-  required AudioRecorderPort recorder,
+  required FakeSpeechCapture recorder,
   required VoiceSaleRepository repo,
   Duration cap = const Duration(seconds: 15),
-  bool online = true,
 }) {
   final container = ProviderContainer(
     overrides: [
-      audioRecorderProvider.overrideWithValue(recorder),
+      speechCaptureProvider.overrideWithValue(recorder),
       voiceSaleRepositoryProvider.overrideWithValue(repo),
       productsStreamProvider.overrideWith((ref) => Stream.value(const [])),
       recentUnitsSoldProvider.overrideWith((ref) => const <String, double>{}),
-      voiceOnlineProvider.overrideWithValue(online),
       maxRecordingDurationProvider.overrideWithValue(cap),
     ],
   );
@@ -104,6 +75,8 @@ Future<void> _endRecording(
 ) async {
   container.read(voiceControllerProvider.notifier).reset();
   await tester.pump();
+  // Riverpod's zero-length housekeeping timers from the session.
+  await tester.pump(const Duration(milliseconds: 1));
 }
 
 Future<void> _pumpSheet(
@@ -149,7 +122,7 @@ void main() {
     testWidgets('reflects what the microphone is actually hearing', (
       tester,
     ) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture();
       final container = _container(
         recorder: recorder,
         repo: _FlakyRepo(Result.success(_oneLine)),
@@ -161,12 +134,12 @@ void main() {
       // A silent room lights no bars.
       expect(container.read(micLevelProvider), 0);
 
-      recorder.levelController.add(-10); // loud, clear speech
+      recorder.level(0.9); // loud, clear speech
       await tester.pump();
 
       expect(container.read(micLevelProvider), greaterThan(0.7));
 
-      recorder.levelController.add(-160); // digital silence
+      recorder.level(0.0); // digital silence
       await tester.pump();
 
       expect(container.read(micLevelProvider), 0);
@@ -176,7 +149,7 @@ void main() {
     testWidgets('warns the shopkeeper when nothing is reaching the mic', (
       tester,
     ) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture();
       final container = _container(
         recorder: recorder,
         repo: _FlakyRepo(Result.success(_oneLine)),
@@ -198,7 +171,7 @@ void main() {
     testWidgets('does not warn once real speech has been heard', (
       tester,
     ) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture();
       final container = _container(
         recorder: recorder,
         repo: _FlakyRepo(Result.success(_oneLine)),
@@ -207,7 +180,7 @@ void main() {
       await container.read(voiceControllerProvider.notifier).startListening();
       await _pumpSheet(tester, container);
 
-      recorder.levelController.add(-12);
+      recorder.level(0.9);
       await tester.pump();
       await tester.pump(const Duration(seconds: 3));
 
@@ -220,7 +193,7 @@ void main() {
     testWidgets('stays hidden for most of the recording, then counts down', (
       tester,
     ) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture();
       final container = _container(
         recorder: recorder,
         repo: _FlakyRepo(Result.success(_oneLine)),
@@ -239,8 +212,8 @@ void main() {
       await tester.pump(const Duration(seconds: 2));
       expect(find.text('Stopping in 2s'), findsOneWidget);
 
-      // Let the cap itself fire so no timer outlives the test.
-      await tester.pump(const Duration(seconds: 3));
+      // Let the cap's backstop fire so no timer outlives the test.
+      await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
     });
   });
@@ -248,7 +221,7 @@ void main() {
   group('retrying a failed parse', () {
     testWidgets('re-sends the same recording instead of making the shopkeeper '
         'say the sale again', (tester) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture();
       final repo = _FlakyRepo(Result.success(_oneLine));
       final container = _container(recorder: recorder, repo: repo);
       final notifier = container.read(voiceControllerProvider.notifier);
@@ -264,29 +237,29 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(repo.audioCalls, 2);
-      expect(repo.audioBytesSeen.first, repo.audioBytesSeen.last);
+      expect(repo.transcriptsSeen.first, repo.transcriptsSeen.last);
       expect(
         container.read(voiceControllerProvider).phase,
         VoicePhase.reviewing,
       );
     });
 
-    testWidgets('offers only a fresh recording when nothing was captured', (
+    testWidgets('offers only a fresh recording when nothing was heard', (
       tester,
     ) async {
-      final recorder = _FakeRecorder();
+      final recorder = FakeSpeechCapture(heard: const Heard(''));
       final container = _container(
         recorder: recorder,
         repo: _FlakyRepo(Result.success(_oneLine)),
-        online: false,
       );
+      final notifier = container.read(voiceControllerProvider.notifier);
 
-      await container.read(voiceControllerProvider.notifier).startListening();
+      await notifier.startListening();
+      await notifier.stopAndParse();
       await _pumpSheet(tester, container);
 
-      expect(find.textContaining("You're offline"), findsOneWidget);
       expect(find.text('Try again'), findsOneWidget);
-      // There is no audio to re-send, so no second, confusing choice.
+      // There are no words to re-read, so no second, confusing choice.
       expect(find.text('Record again'), findsNothing);
       await _endRecording(tester, container);
     });

@@ -7,8 +7,8 @@ import '../../cart/presentation/cart_controller.dart';
 import '../../inventory/domain/product.dart';
 import '../../inventory/presentation/inventory_controller.dart';
 import '../data/scan_camera.dart';
+import '../data/vision_embedder.dart';
 import '../data/vision_scan_repository.dart';
-import '../domain/scan_candidates.dart';
 import '../domain/scan_decision.dart';
 import '../domain/scan_item.dart';
 
@@ -27,6 +27,10 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
   List<ScanItem> build() => const <ScanItem>[];
 
   final _frames = <String, Uint8List>{};
+
+  /// Each chip's photo fingerprint, kept until the chip is confirmed so the
+  /// model can learn from it (design §5a.4).
+  final _fingerprints = <String, Embedding>{};
   final _queue = <String>[];
   int _active = 0;
   int _seq = 0;
@@ -105,20 +109,21 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
       // silently starve recognition of a catalog to match against.
       final products =
           ref.read(productsStreamProvider).value ?? const <Product>[];
-      final payload = buildCandidatePayload(products);
       final result = await ref
           .read(visionScanRepositoryProvider)
-          .recognize(imageBytes: bytes, candidates: payload.candidates);
+          .recognize(imageBytes: bytes, products: products);
 
       // The chip may have been removed while the call was in flight.
       if (state.any((it) => it.id == id)) {
         result.when(
-          success: (recognition) {
+          success: (scan) {
+            final recognition = scan.result;
+            if (scan.embedding case final Embedding e) _fingerprints[id] = e;
             final byId = {for (final p in products) p.id: p};
             final decision = decideScanAction(recognition);
             final matched = <Product>[
               for (final m in decision.matches)
-                if (byId[payload.resolve(m.productId)] case final Product p) p,
+                if (byId[m.productId] case final Product p) p,
             ];
             final label = _readLabel(
               recognition.readBrand,
@@ -219,10 +224,20 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
   /// picker sheet opened but before the shopkeeper tapped a result -- could
   /// never match itself and would always fall into the merge branch,
   /// silently inflating an unrelated resolved chip's quantity.
+  /// The shopkeeper picked the product for an unsure or unknown chip: the
+  /// strongest lesson there is, so the model learns it straight away.
   void choose(String itemId, Product product) {
     final it = state.where((i) => i.id == itemId).firstOrNull;
     if (it == null) return;
+    _learn(itemId, product.id);
     _resolve(itemId, product, it.readLabel);
+  }
+
+  void _learn(String itemId, String productId) {
+    final fp = _fingerprints.remove(itemId);
+    if (fp == null) return;
+    // Fire and forget: a failed save only costs this one lesson.
+    ref.read(visionScanRepositoryProvider).learn(productId, fp).ignore();
   }
 
   void setQuantity(String itemId, double quantity) {
@@ -236,6 +251,7 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
 
   void remove(String itemId) {
     _frames.remove(itemId);
+    _fingerprints.remove(itemId);
     _queue.remove(itemId);
     state = state.where((i) => i.id != itemId).toList();
   }
@@ -245,16 +261,22 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
   void addAllToCart() {
     final cart = ref.read(cartControllerProvider.notifier);
     for (final it in state) {
-      if (it.isAddable) cart.addOrIncrement(it.product!, it.quantity);
+      if (it.isAddable) {
+        cart.addOrIncrement(it.product!, it.quantity);
+        // Adding to the cart confirms what the model saw.
+        _learn(it.id, it.product!.id);
+      }
     }
     state = const <ScanItem>[];
     _frames.clear();
+    _fingerprints.clear();
     _queue.clear();
   }
 
   void clear() {
     state = const <ScanItem>[];
     _frames.clear();
+    _fingerprints.clear();
     _queue.clear();
   }
 

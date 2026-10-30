@@ -1851,4 +1851,153 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get finance_tipsError => 'Couldn\'t get advice right now.';
+
+  @override
+  String finance_tipOverdue(String name, String amount) {
+    return 'Visit or call $name this week and collect part of the $amount they owe.';
+  }
+
+  @override
+  String finance_tipCashShort(String amount) {
+    return 'Restock smaller this week: restocks cost $amount more than the money that came in.';
+  }
+
+  @override
+  String finance_tipCreditGrowing(String total) {
+    return 'Give less new credit this week and collect old dues first. $total is owed now.';
+  }
+
+  @override
+  String finance_tipSalesDrop(String percent) {
+    return 'Sales fell $percent. Check which items ran out and restock your best sellers first.';
+  }
+
+  @override
+  String finance_tipCollectEarly(String amount) {
+    return 'Collect the $amount customers owe before it gets old. Small, regular collections are easiest.';
+  }
+
+  @override
+  String get finance_tipGoDigital =>
+      'Ask customers to pay by mobile wallet more often. Digital sales build a record lenders trust.';
+
+  @override
+  String finance_tipFinancing(String option) {
+    return '$option could help your shop. Compare the lender\'s terms before you decide.';
+  }
+
+  @override
+  String get finance_tipKeepRecording =>
+      'Keep recording every sale and restock so your money picture stays accurate.';
+
+  @override
+  String get backup_section => 'Your data';
+
+  @override
+  String get backup_now => 'Back up now';
+
+  @override
+  String get backup_never =>
+      'Never backed up. Your shop lives only on this phone.';
+
+  @override
+  String backup_daysAgo(int days) {
+    final intl.NumberFormat daysNumberFormat = intl.NumberFormat.decimalPattern(
+      localeName,
+    );
+    final String daysString = daysNumberFormat.format(days);
+
+    String _temp0 = intl.Intl.pluralLogic(
+      days,
+      locale: localeName,
+      other: 'Last backup: $daysString days ago',
+      one: 'Last backup: yesterday',
+      zero: 'Last backup: today',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get backup_restore => 'Restore backup';
+
+  @override
+  String get backup_restoreSub => 'Bring the shop back from a backup file';
+
+  @override
+  String get backup_restoreConfirmTitle => 'Replace everything on this phone?';
+
+  @override
+  String backup_restoreConfirmBody(
+    String shop,
+    int products,
+    int sales,
+    String date,
+  ) {
+    final intl.NumberFormat productsNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String productsString = productsNumberFormat.format(products);
+    final intl.NumberFormat salesNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String salesString = salesNumberFormat.format(sales);
+
+    return 'This backup of $shop has $productsString products and $salesString sales, made $date. Everything on this phone now will be replaced.';
+  }
+
+  @override
+  String get backup_restoreButton => 'Restore';
+
+  @override
+  String get backup_restored => 'Shop restored from backup';
+
+  @override
+  String get backup_failed => 'Couldn\'t finish. Please try again.';
+
+  @override
+  String get backup_notBackup => 'That file isn\'t an EasySell backup.';
+
+  @override
+  String get backup_shareSubject => 'EasySell shop backup';
+
+  @override
+  String get teach_title => 'Photos for scanning';
+
+  @override
+  String get teach_none =>
+      'Take 2–3 photos from different sides so Scan can recognise this product, even without a label.';
+
+  @override
+  String teach_count(int count) {
+    final intl.NumberFormat countNumberFormat =
+        intl.NumberFormat.decimalPattern(localeName);
+    final String countString = countNumberFormat.format(count);
+
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other:
+          'Scan knows this product from $countString photos. Every sale you scan teaches it more.',
+      one:
+          'Scan knows this product from 1 photo. Add one more from another side.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get teach_add => 'Take photo';
+
+  @override
+  String get teach_learning => 'Learning…';
+
+  @override
+  String get teach_failed =>
+      'Couldn\'t learn from that photo. Please try again.';
+
+  @override
+  String get teach_removeTitle => 'Remove this photo?';
+
+  @override
+  String get teach_remove => 'Remove';
+
+  @override
+  String get teach_fromScan => 'Learned from a scan';
 }

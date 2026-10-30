@@ -1,33 +1,11 @@
-import 'package:ai_shopkeeper/core/error/failure.dart';
-import 'package:ai_shopkeeper/core/error/result.dart';
-import 'package:ai_shopkeeper/features/finance/data/money_tips_repository.dart';
 import 'package:ai_shopkeeper/features/finance/domain/finance_health.dart';
 import 'package:ai_shopkeeper/features/finance/presentation/money_tips_controller.dart';
 import 'package:ai_shopkeeper/features/finance/presentation/money_tips_facts.dart';
+import 'package:ai_shopkeeper/features/finance/presentation/money_tips_rules.dart';
 import 'package:ai_shopkeeper/l10n/app_localizations_en.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-class FakeTipsRepo implements MoneyTipsRepository {
-  FakeTipsRepo(this.result);
-
-  Result<List<String>> result;
-  int calls = 0;
-  Map<String, dynamic>? lastFacts;
-  String? lastLang;
-
-  @override
-  Future<Result<List<String>>> fetch({
-    required String lang,
-    required Map<String, dynamic> facts,
-  }) async {
-    calls++;
-    lastLang = lang;
-    lastFacts = facts;
-    return result;
-  }
-}
 
 FinanceHealth _h({double cash = 500, int overdue = 0}) => FinanceHealth(
   cashSales7d: cash,
@@ -82,53 +60,64 @@ void main() {
     });
   });
 
+  group('rules (worked out on the phone)', () {
+    final l10n = AppLocalizationsEn();
+
+    test("warnings come first, in order, with the card's own figures", () {
+      final tips = moneyTips(health: _h(overdue: 2), l10n: l10n, currency: 'USD');
+      expect(tips.first, startsWith('Visit or call Rahim'));
+      expect(tips.first, contains(r'$1,200'));
+      expect(tips[1], startsWith('Restock smaller'));
+      expect(tips.length, lessThanOrEqualTo(3));
+    });
+
+    test('a healthy shop gets keep-it-up advice, never invented problems', () {
+      final tips = moneyTips(
+        health: _h(cash: 2000),
+        l10n: l10n,
+        currency: 'USD',
+      );
+      expect(tips, isNotEmpty);
+      for (final t in tips) {
+        expect(t, isNot(contains('fell')));
+        expect(t.toLowerCase(), isNot(contains('take a loan')));
+      }
+    });
+  });
+
   group('controller', () {
-    late FakeTipsRepo repo;
     late ProviderContainer c;
 
     setUp(() {
-      repo = FakeTipsRepo(const Result.success(['Collect from Rahim.']));
-      c = ProviderContainer(
-        overrides: [moneyTipsRepositoryProvider.overrideWithValue(repo)],
-      );
+      c = ProviderContainer();
       addTearDown(c.dispose);
     });
 
-    Future<void> ask(String key) => c
-        .read(moneyTipsProvider.notifier)
-        .ask(key: key, lang: 'en', facts: const {'a': 1});
+    void ask(String key, [List<String> tips = const ['Collect from Rahim.']]) =>
+        c.read(moneyTipsProvider.notifier).ask(key: key, tips: tips);
 
-    test('a tap fetches tips; the same numbers never call twice', () async {
-      await ask('k1');
-      expect(c.read(moneyTipsProvider), isA<TipsReady>());
-      expect((c.read(moneyTipsProvider) as TipsReady).tips, [
-        'Collect from Rahim.',
-      ]);
-      await ask('k1');
-      expect(repo.calls, 1);
+    test('a tap shows tips for those numbers', () {
+      ask('k1');
+      final s = c.read(moneyTipsProvider);
+      expect(s, isA<TipsReady>());
+      expect((s as TipsReady).tips, ['Collect from Rahim.']);
     });
 
-    test('new numbers ask again', () async {
-      await ask('k1');
-      await ask('k2');
-      expect(repo.calls, 2);
+    test('new numbers replace the old advice', () {
+      ask('k1');
+      ask('k2', ['Other']);
       expect((c.read(moneyTipsProvider) as TipsReady).key, 'k2');
     });
 
-    test('a failure is reported for that key, and retry works', () async {
-      repo.result = const Result.failure(DatabaseFailure('x'));
-      await ask('k1');
+    test('no tips is reported as a failure for that key', () {
+      ask('k1', const []);
       expect(c.read(moneyTipsProvider), isA<TipsFailed>());
-      repo.result = const Result.success(['ok']);
-      await ask('k1');
-      expect(c.read(moneyTipsProvider), isA<TipsReady>());
     });
 
     test('the answer survives a restart (saved on the phone)', () async {
-      await ask('k1');
-      final fresh = ProviderContainer(
-        overrides: [moneyTipsRepositoryProvider.overrideWithValue(repo)],
-      );
+      ask('k1');
+      await Future<void>.delayed(Duration.zero);
+      final fresh = ProviderContainer();
       addTearDown(fresh.dispose);
       fresh.read(moneyTipsProvider);
       await Future<void>.delayed(Duration.zero);
@@ -136,22 +125,6 @@ void main() {
       final s = fresh.read(moneyTipsProvider);
       expect(s, isA<TipsReady>());
       expect((s as TipsReady).key, 'k1');
-      await fresh
-          .read(moneyTipsProvider.notifier)
-          .ask(key: 'k1', lang: 'en', facts: const {});
-      expect(repo.calls, 1);
     });
-  });
-
-  test('the key changes with the day, language and numbers', () {
-    final d = DateTime(2026, 10, 18);
-    final base = moneyTipsKey(d, 'en', const {'in': r'$5'});
-    expect(moneyTipsKey(d, 'en', const {'in': r'$5'}), base);
-    expect(
-      moneyTipsKey(DateTime(2026, 10, 19), 'en', const {'in': r'$5'}),
-      isNot(base),
-    );
-    expect(moneyTipsKey(d, 'bn', const {'in': r'$5'}), isNot(base));
-    expect(moneyTipsKey(d, 'en', const {'in': r'$6'}), isNot(base));
   });
 }

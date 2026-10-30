@@ -1,117 +1,134 @@
-import 'dart:io';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:sqflite/sqflite.dart';
 
+import '../../../core/db/app_database.dart';
 import '../../../core/error/failure.dart';
 import '../../../core/error/result.dart';
-import '../../../shared/providers/supabase_provider.dart';
 import '../domain/category.dart';
 
-/// CRUD + realtime access for `categories`. Like [ProductRepository], this is the
-/// only layer that touches the Supabase client; everything returns a [Result]
-/// (except the live stream, whose errors flow through `AsyncValue`).
+/// CRUD + live access for `categories` in the phone's database.
 class CategoryRepository {
-  CategoryRepository(this._client);
+  CategoryRepository(this._db);
 
-  final SupabaseClient _client;
+  final AppDatabase _db;
 
   static const _table = 'categories';
 
-  /// Live, name-ordered list of a shop's categories. Realtime keeps the picker
-  /// and the manage-categories screen current after inline adds/renames/deletes.
-  Stream<List<Category>> watchCategories(String shopId) {
-    return _client
-        .from(_table)
-        .stream(primaryKey: ['id'])
-        .eq('shop_id', shopId)
-        .order('name')
-        .map((rows) => rows.map(Category.fromJson).toList());
+  /// Live, name-ordered list of a shop's categories.
+  Stream<List<Category>> watchCategories(String shopId) =>
+      _db.watch({_table}, () => _list(shopId));
+
+  Future<List<Category>> _list(String shopId) async {
+    final rows = await _db.db.query(
+      _table,
+      where: 'shop_id = ?',
+      whereArgs: [shopId],
+      orderBy: 'name COLLATE NOCASE',
+    );
+    return [for (final r in rows) Category.fromJson(decodeRow(r))];
   }
 
-  /// One-shot fetch (name-ordered). Useful where a stream isn't warranted.
+  /// One-shot fetch (name-ordered).
   Future<Result<List<Category>>> fetchCategories(String shopId) async {
     try {
-      final rows = await _client
-          .from(_table)
-          .select()
-          .eq('shop_id', shopId)
-          .order('name');
-      return Result.success(rows.map(Category.fromJson).toList());
+      return Result.success(await _list(shopId));
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// Normalized find-or-create via the `upsert_category` RPC. Returns the
-  /// existing row if a case/space-insensitive match already exists (dedup is
-  /// enforced by the DB unique constraint), otherwise the freshly created one.
+  /// Normalized find-or-create (0003 `upsert_category`): an existing
+  /// case/space-insensitive match is returned with its display name kept.
   Future<Result<Category>> upsertCategory({
     required String shopId,
     required String name,
   }) async {
+    final display = normalizeCategoryDisplay(name);
+    final norm = display.toLowerCase();
+    if (norm.isEmpty) {
+      return const Result.failure(
+        DatabaseFailure('Category name cannot be empty'),
+      );
+    }
     try {
-      final data = await _client.rpc(
-        'upsert_category',
-        params: {'p_shop_id': shopId, 'p_name': name},
+      await _db.db.insert(_table, {
+        'id': newId(),
+        'shop_id': shopId,
+        'name': display,
+        'name_normalized': norm,
+        'created_at': nowMicros(),
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      _db.notify({_table});
+      final rows = await _db.db.query(
+        _table,
+        where: 'shop_id = ? AND name_normalized = ?',
+        whereArgs: [shopId, norm],
+        limit: 1,
       );
-      // The function returns a single `categories` composite row. Depending on
-      // PostgREST shaping that arrives as a Map or a single-element List.
-      final row = data is List ? data.first : data;
-      return Result.success(
-        Category.fromJson(Map<String, dynamic>.from(row as Map)),
-      );
+      return Result.success(Category.fromJson(decodeRow(rows.first)));
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// Renames a category via the `rename_category` RPC (normalizes + updates
-  /// name_normalized). Rejects collisions with a friendly message from the DB.
+  /// Renames a category (0004 `rename_category`); refuses a name another
+  /// category of the shop already has.
   Future<Result<Category>> renameCategory({
     required String id,
     required String name,
   }) async {
+    final display = normalizeCategoryDisplay(name);
+    final norm = display.toLowerCase();
+    if (norm.isEmpty) {
+      return const Result.failure(
+        DatabaseFailure('Category name cannot be empty'),
+      );
+    }
     try {
-      final data = await _client.rpc(
-        'rename_category',
-        params: {'p_id': id, 'p_name': name},
+      final count = await _db.db.update(
+        _table,
+        {'name': display, 'name_normalized': norm},
+        where: 'id = ?',
+        whereArgs: [id],
       );
-      final row = data is List ? data.first : data;
-      return Result.success(
-        Category.fromJson(Map<String, dynamic>.from(row as Map)),
-      );
+      if (count == 0) {
+        return const Result.failure(DatabaseFailure('Category not found'));
+      }
+      _db.notify({_table});
+      final rows = await _db.db.query(_table, where: 'id = ?', whereArgs: [id]);
+      return Result.success(Category.fromJson(decodeRow(rows.first)));
+    } on DatabaseException catch (e) {
+      if (e.isUniqueConstraintError()) {
+        return Result.failure(
+          DatabaseFailure('A category named "$display" already exists'),
+        );
+      }
+      return Result.failure(_map(e));
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  /// Deletes a category. Affected products' `category_id` is set to null by the
-  /// ON DELETE SET NULL FK — products are never deleted, just uncategorized.
+  /// Deletes a category; its products become uncategorized (ON DELETE SET
+  /// NULL), never deleted.
   Future<Result<void>> deleteCategory(String id) async {
     try {
-      await _client.from(_table).delete().eq('id', id);
+      await _db.db.delete(_table, where: 'id = ?', whereArgs: [id]);
+      _db.notify({_table, 'products'});
       return const Result.success(null);
     } catch (e) {
       return Result.failure(_map(e));
     }
   }
 
-  Failure _map(Object e) {
-    if (e is PostgrestException) {
-      return DatabaseFailure(
-        e.message.isNotEmpty
-            ? e.message
-            : 'Could not complete the request. Please try again.',
-      );
-    }
-    if (e is SocketException) {
-      return const NetworkFailure('No internet connection. Please try again.');
-    }
-    return const UnexpectedFailure('Something went wrong. Please try again.');
-  }
+  Failure _map(Object e) =>
+      const DatabaseFailure('Could not complete the request. Please try again.');
 }
 
+/// Trim and collapse internal whitespace (the SQL `regexp_replace('\s+', ' ')`).
+String normalizeCategoryDisplay(String name) =>
+    name.replaceAll(RegExp(r'\s+'), ' ').trim();
+
 final categoryRepositoryProvider = Provider<CategoryRepository>((ref) {
-  return CategoryRepository(ref.watch(supabaseClientProvider));
+  return CategoryRepository(ref.watch(appDatabaseProvider));
 });

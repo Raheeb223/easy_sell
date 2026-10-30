@@ -4,18 +4,19 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/config/theme.dart';
 import '../../../core/l10n/l10n_ext.dart';
+import '../../../core/router/app_router.dart';
 import '../../../core/widgets/entrance.dart';
 import '../../../core/widgets/pressable.dart';
 import '../../../shared/providers/onboarding_provider.dart';
 
 /// First-launch welcome screen: dark-lime gradient hero with feature icons, a bold
-/// headline, and a dark "Get started" pill. Shown once, then → login.
+/// headline, and a dark "Get started" pill. Shown once, then → shop setup.
 class WelcomeScreen extends ConsumerWidget {
   const WelcomeScreen({super.key});
 
   Future<void> _start(BuildContext context, WidgetRef ref) async {
     await ref.read(onboardingSeenProvider.notifier).markSeen();
-    if (context.mounted) context.go('/login');
+    if (context.mounted) context.go(AppRoutes.onboarding);
   }
 
   @override

@@ -7,12 +7,10 @@ import 'scan_camera.dart';
 
 /// The `camera` package behind the [ScanCamera] seam.
 ///
-/// Resolution is deliberately [ResolutionPreset.medium] (640x480). The old
-/// `image_picker` path shot at maxWidth 768 / quality 60 because a smaller
-/// payload noticeably cut scan latency on slow shop connections, and `medium`
-/// is the closest preset. This is the one number in the feature NOT backed by
-/// evidence: if small print on packaging reads worse than it used to, move to
-/// [ResolutionPreset.high] (1280x720) and accept the larger upload.
+/// Resolution is [ResolutionPreset.high] (1280x720). Nothing is uploaded any
+/// more (recognition runs on the phone), and on-device ML Kit needs the extra
+/// pixels to read small print like `500ml`; the vision model scales the frame
+/// down to 224px itself.
 class RealScanCamera implements ScanCamera {
   CameraController? _controller;
 
@@ -63,7 +61,7 @@ class RealScanCamera implements ScanCamera {
     );
     final controller = CameraController(
       back,
-      ResolutionPreset.medium,
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );

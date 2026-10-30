@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/config/theme.dart';
 import 'package:ai_shopkeeper/core/error/result.dart';
@@ -8,7 +7,7 @@ import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/category_controller.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_controller.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_list_screen.dart';
-import 'package:ai_shopkeeper/features/voice/data/audio_recorder.dart';
+import 'package:ai_shopkeeper/features/voice/data/speech_capture.dart';
 import 'package:ai_shopkeeper/features/voice/data/voice_sale_repository.dart';
 import 'package:ai_shopkeeper/features/voice/domain/voice_parse_result.dart';
 import 'package:ai_shopkeeper/features/voice/presentation/voice_controller.dart';
@@ -21,77 +20,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/voice_fakes.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Fake recorder: `permissionOk` mirrors a mic permission grant/denial for
-/// the mic-denied error test. Records whether [cancel] was ever called so a
-/// test can prove a live recording was actually torn down (not just that the
-/// UI stopped rendering it). `stop()` hands back a fixed, non-empty
-/// recording by default so the happy-path phases (`thinking` ->
-/// `reviewing`) can proceed without any test needing to fabricate audio.
-class _FakeAudioRecorder implements AudioRecorderPort {
-  _FakeAudioRecorder({this.permissionOk = true});
-  final bool permissionOk;
-  bool canceled = false;
-
-  @override
-  Stream<double> get levels => const Stream<double>.empty();
-
-  @override
-  Future<bool> hasPermission() async => permissionOk;
-
-  @override
-  Future<void> start() async {}
-
-  @override
-  Future<({Uint8List bytes, String mime})?> stop() async =>
-      (bytes: Uint8List.fromList(const [1, 2, 3]), mime: 'audio/m4a');
-
-  @override
-  Future<void> cancel() async {
-    canceled = true;
-  }
-
-  @override
-  Future<void> dispose() async {}
-}
-
-/// Fake repository: `implements` (not `extends`) so the real
-/// [VoiceSaleRepository]'s private Supabase client field never needs
-/// constructing -- same trick `voice_review_sheet_test.dart` uses.
-class _FakeVoiceRepo implements VoiceSaleRepository {
-  // Fire-and-forget optimization with no observable effect on parsing.
-  @override
-  Future<void> warmUp() async {}
-
-  _FakeVoiceRepo(this._result);
-  final Result<VoiceParseResult> _result;
-
-  @override
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) async => _result;
-
-  @override
-  Future<Result<VoiceParseResult>> parseTranscript({
-    required String transcript,
-    required List<Map<String, dynamic>> candidates,
-  }) async => _result;
+class _FakeVoiceRepo extends FakeVoiceRepo {
+  _FakeVoiceRepo(Result<VoiceParseResult> result) : super(result);
 }
 
 Product _p(String id, {required String name}) =>
     Product(id: id, shopId: 's', name: name, quantity: 10);
 
 ProviderContainer _container({
-  required _FakeAudioRecorder recorder,
+  required FakeSpeechCapture recorder,
   Result<VoiceParseResult>? parseResult,
   List<Product> products = const [],
 }) {
   return ProviderContainer(
     overrides: [
-      audioRecorderProvider.overrideWithValue(recorder),
+      speechCaptureProvider.overrideWithValue(recorder),
       voiceSaleRepositoryProvider.overrideWithValue(
         _FakeVoiceRepo(
           parseResult ?? Result.success(VoiceParseResult(items: const [])),
@@ -125,7 +72,7 @@ void main() {
   testWidgets('idle shows the mic hint; tapping mic transitions to listening', (
     tester,
   ) async {
-    final recorder = _FakeAudioRecorder();
+    final recorder = FakeSpeechCapture();
     final container = _container(recorder: recorder);
     addTearDown(container.dispose);
 
@@ -156,7 +103,7 @@ void main() {
     'error phase with micDenied shows the mapped l10n string and Retry '
     'resets to idle',
     (tester) async {
-      final recorder = _FakeAudioRecorder(permissionOk: false);
+      final recorder = FakeSpeechCapture(permissionOk: false);
       final container = _container(recorder: recorder);
       addTearDown(container.dispose);
 
@@ -185,7 +132,7 @@ void main() {
   testWidgets('reviewing phase renders the review sheet\'s title', (
     tester,
   ) async {
-    final recorder = _FakeAudioRecorder();
+    final recorder = FakeSpeechCapture();
     final parsed = VoiceParseResult(
       items: [
         VoiceItem(
@@ -220,7 +167,7 @@ void main() {
     'showVoiceSaleSheet resets the controller and cancels the recorder '
     'when the sheet is dismissed without completing the flow',
     (tester) async {
-      final recorder = _FakeAudioRecorder();
+      final recorder = FakeSpeechCapture();
       final container = _container(recorder: recorder);
       addTearDown(container.dispose);
 
@@ -251,7 +198,7 @@ void main() {
         container.read(voiceControllerProvider).phase,
         VoicePhase.listening,
       );
-      expect(recorder.canceled, isFalse);
+      expect(recorder.cancelled, isFalse);
 
       // Dismiss the sheet by popping its route directly -- deterministic,
       // and exercises the exact same Future the sheet's swipe-to-dismiss and
@@ -261,7 +208,7 @@ void main() {
 
       expect(container.read(voiceControllerProvider).phase, VoicePhase.idle);
       expect(
-        recorder.canceled,
+        recorder.cancelled,
         isTrue,
         reason:
             'showVoiceSaleSheet must reset() on dismissal so a live '

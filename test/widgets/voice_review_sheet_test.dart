@@ -1,10 +1,9 @@
-import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/config/theme.dart';
 import 'package:ai_shopkeeper/core/error/result.dart';
 import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
 import 'package:ai_shopkeeper/features/inventory/presentation/inventory_controller.dart';
-import 'package:ai_shopkeeper/features/voice/data/audio_recorder.dart';
+import 'package:ai_shopkeeper/features/voice/data/speech_capture.dart';
 import 'package:ai_shopkeeper/features/voice/data/voice_sale_repository.dart';
 import 'package:ai_shopkeeper/features/voice/domain/voice_parse_result.dart';
 import 'package:ai_shopkeeper/features/voice/presentation/voice_controller.dart';
@@ -15,59 +14,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/voice_fakes.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Fake recorder that hands back a fixed, non-empty recording the instant
-/// `stop()` is called, so `startListening()` -> `stopAndParse()` leaves the
-/// controller reviewing without any manual plumbing. Trimmed from
-/// `test/voice_controller_test.dart`'s version to just what this harness
-/// needs.
-class _FakeAudioRecorder implements AudioRecorderPort {
-  @override
-  Stream<double> get levels => const Stream<double>.empty();
-
-  @override
-  Future<bool> hasPermission() async => true;
-
-  @override
-  Future<void> start() async {}
-
-  @override
-  Future<({Uint8List bytes, String mime})?> stop() async =>
-      (bytes: Uint8List.fromList(const [1, 2, 3]), mime: 'audio/m4a');
-
-  @override
-  Future<void> cancel() async {}
-
-  @override
-  Future<void> dispose() async {}
-}
-
-/// Fake repository: `implements` (not `extends`) so the real
-/// [VoiceSaleRepository]'s private Supabase client field never needs
-/// constructing -- same trick `test/voice_controller_test.dart` uses.
-class _FakeVoiceRepo implements VoiceSaleRepository {
-  // Fire-and-forget optimization with no observable effect on parsing.
-  @override
-  Future<void> warmUp() async {}
-
-  _FakeVoiceRepo(this._result, {Result<VoiceParseResult>? transcriptResult})
-    : _transcriptResult = transcriptResult ?? _result;
-  final Result<VoiceParseResult> _result;
-  final Result<VoiceParseResult> _transcriptResult;
-
-  @override
-  Future<Result<VoiceParseResult>> parse({
-    required Uint8List audioBytes,
-    required String audioMime,
-    required List<Map<String, dynamic>> candidates,
-  }) async => _result;
-
-  @override
-  Future<Result<VoiceParseResult>> parseTranscript({
-    required String transcript,
-    required List<Map<String, dynamic>> candidates,
-  }) async => _transcriptResult;
+class _FakeVoiceRepo extends FakeVoiceRepo {
+  _FakeVoiceRepo(Result<VoiceParseResult> result) : super(result);
 }
 
 Product _p(String id, {required String name}) =>
@@ -85,7 +37,7 @@ Future<ProviderContainer> _reviewingContainer({
 }) async {
   final container = ProviderContainer(
     overrides: [
-      audioRecorderProvider.overrideWithValue(_FakeAudioRecorder()),
+      speechCaptureProvider.overrideWithValue(FakeSpeechCapture()),
       voiceSaleRepositoryProvider.overrideWithValue(
         _FakeVoiceRepo(Result.success(parsed)),
       ),

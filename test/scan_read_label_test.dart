@@ -12,6 +12,8 @@ import 'package:ai_shopkeeper/features/scan/presentation/scan_session_controller
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/scan_fakes.dart';
+
 const _pepsi = Product(
   id: 'p-pepsi',
   shopId: 's1',
@@ -24,16 +26,16 @@ const _pepsi = Product(
 /// Answers every `recognize()` call with a confident match on Pepsi (index 0)
 /// carrying the given read fields, so the resulting chip resolves and its
 /// `readLabel` reflects the join.
-class _StubRepo implements VisionScanRepository {
+class _StubRepo extends IndexedScanRepo {
   _StubRepo({this.brand, this.name, this.size});
   final String? brand;
   final String? name;
   final String? size;
 
   @override
-  Future<Result<RecognitionResult>> recognize({
+  Future<Result<RecognitionResult>> recognizeIndexed({
     required Uint8List imageBytes,
-    required List<Map<String, dynamic>> candidates,
+    required List<Product> products,
   }) async => Result.success(
     RecognitionResult(
       status: RecognitionStatus.match,
