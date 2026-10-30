@@ -10,6 +10,10 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
   language:
     # Unsound implicit downcasts from `dynamic` are the main way a Supabase JSON
     # row silently becomes the wrong type and blows up at runtime instead of at
