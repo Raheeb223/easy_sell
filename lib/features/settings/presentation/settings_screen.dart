@@ -105,7 +105,7 @@ class SettingsScreen extends ConsumerWidget {
             ),
             _Section(
               title: l10n.backup_section,
-              children: const [_BackupTile(), _RestoreTile()],
+              children: const [_BackupTile(), _RestoreTile(), _LicensesTile()],
             ),
           ],
         ),
@@ -249,6 +249,24 @@ class _RestoreTile extends ConsumerWidget {
       subtitle: Text(l10n.backup_restoreSub),
       trailing: const _Chevron(),
       onTap: () => restoreBackupFlow(context, ref),
+    );
+  }
+}
+
+/// Open-source licences, including the credits the EasySell Vision model's
+/// training data requires.
+class _LicensesTile extends StatelessWidget {
+  const _LicensesTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return ListTile(
+      leading: const SettingsIconTile(Icons.info_outline),
+      title: Text(l10n.settings_licenses),
+      subtitle: Text(l10n.settings_licensesSub),
+      trailing: const _Chevron(),
+      onTap: () => showLicensePage(context: context, applicationName: 'EasySell'),
     );
   }
 }

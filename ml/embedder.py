@@ -92,13 +92,14 @@ class ArcFace(nn.Module):
         self.s, self.m = s, m
 
     def forward(self, emb, labels):
-        cos = F.linear(emb, F.normalize(self.w, dim=1)).float().clamp(-1 + 1e-7, 1 - 1e-7)
-        theta = torch.acos(cos)
-        target = torch.cos(theta + self.m)
-        onehot = F.one_hot(labels, cos.size(1)).bool()
-        logits = torch.where(onehot, target, cos) * self.s
+        cos = F.linear(emb, F.normalize(self.w, dim=1)).float()
+        # The margin only touches each image's own product: computing acos
+        # over all ~300k classes (and a one-hot of that size) was the slowest
+        # part of a training step.
+        tc = cos.gather(1, labels[:, None]).clamp(-1 + 1e-7, 1 - 1e-7)
+        target = torch.cos(torch.acos(tc) + self.m)
+        logits = cos.scatter(1, labels[:, None], target) * self.s
         return F.cross_entropy(logits, labels, label_smoothing=0.1)
-
 
 def train_transform():
     # Shop conditions: handheld, tilted, partly covered by fingers, odd light.

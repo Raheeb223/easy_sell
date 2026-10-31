@@ -123,6 +123,9 @@ def main():
     ap.add_argument("--max-products", type=int, default=300000)
     ap.add_argument("--per-product", type=int, default=4)
     ap.add_argument("--threads", type=int, default=48)
+    ap.add_argument("--stem", default="off_index", help="output pack name")
+    ap.add_argument("--exclude-stems", nargs="*", default=[],
+                    help="packs whose products are already downloaded (a later batch skips them)")
     a = ap.parse_args()
     off = a.data / "off"
 
@@ -134,6 +137,13 @@ def main():
         n0 = len(products)
         products.extend(fn)
         print(f"{src}: {len(products) - n0} products with 2+ usable photos", flush=True)
+
+    already = set()
+    for st in a.exclude_stems:
+        already |= set((a.data / f"{st}.labels.txt").read_text(encoding="utf-8").split("\n"))
+    if already:
+        products = [p for p in products if f"{p[0]}:{p[1]}" not in already]
+        print(f"{len(products)} products not in {a.exclude_stems}", flush=True)
 
     rng = random.Random(0)
     rng.shuffle(products)
@@ -150,14 +160,14 @@ def main():
             jobs.append((f"{src}:{code}", f"{SOURCES[src]}/{code_path(code)}/{i}.400.jpg"))
     rng.shuffle(jobs)
 
-    pack = a.data / "off_index.pack"
-    urls_done = a.data / "off_index.urls.txt"
+    pack = a.data / f"{a.stem}.pack"
+    urls_done = a.data / f"{a.stem}.urls.txt"
     done = set(urls_done.read_text(encoding="utf-8").split("\n")) if urls_done.exists() else set()
     offsets, lengths, labels = [], [], []
-    if done and (a.data / "off_index.offsets.npy").exists():
-        o = np.load(a.data / "off_index.offsets.npy")
+    if done and (a.data / f"{a.stem}.offsets.npy").exists():
+        o = np.load(a.data / f"{a.stem}.offsets.npy")
         offsets, lengths = list(o[0]), list(o[1])
-        labels = (a.data / "off_index.labels.txt").read_text(encoding="utf-8").split("\n")
+        labels = (a.data / f"{a.stem}.labels.txt").read_text(encoding="utf-8").split("\n")
     jobs = [j for j in jobs if j[1] not in done]
     print(f"{len(jobs)} images to fetch ({len(done)} already packed)", flush=True)
 
@@ -165,8 +175,8 @@ def main():
     t0 = time.time()
 
     def save():
-        np.save(a.data / "off_index.offsets.npy", np.array([offsets, lengths], dtype=np.int64))
-        (a.data / "off_index.labels.txt").write_text("\n".join(labels), encoding="utf-8")
+        np.save(a.data / f"{a.stem}.offsets.npy", np.array([offsets, lengths], dtype=np.int64))
+        (a.data / f"{a.stem}.labels.txt").write_text("\n".join(labels), encoding="utf-8")
 
     with open(pack, "ab") as out, open(urls_done, "a", encoding="utf-8") as ulog, \
             ThreadPoolExecutor(a.threads) as ex:

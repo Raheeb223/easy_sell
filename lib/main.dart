@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,6 +20,14 @@ Future<void> main() async {
   // Draw behind the status and navigation bars; the per-theme overlay style
   // (icon contrast) is set in App's builder so it tracks light/dark.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+  // Credits the EasySell Vision model's training data and teacher require
+  // (shown on Settings -> About & licenses).
+  LicenseRegistry.addLicense(
+    () => Stream.value(
+      const LicenseEntryWithLineBreaks(['EasySell Vision'], _visionCredits),
+    ),
+  );
 
   // The shop's whole database lives on this phone (phone-only design).
   final db = await AppDatabase.open();
@@ -55,3 +64,16 @@ Future<void> main() async {
     ),
   );
 }
+
+const _visionCredits = '''
+EasySell Vision, the on-device product recognition model, was trained with:
+
+Product photos and data from Open Food Facts, Open Beauty Facts, Open Pet Food
+Facts and Open Products Facts (https://world.openfoodfacts.org), contributed
+by their community. Photos: Creative Commons Attribution-ShareAlike 3.0.
+Database: Open Database License (ODbL).
+
+Grocery Store Dataset, M. Klasson, C. Zhang, H. Kjellstrom (2019), MIT License.
+
+Teacher model: SigLIP (Google), Apache License 2.0.
+Student backbone: MobileNetV3 weights from timm (Ross Wightman), Apache License 2.0.''';

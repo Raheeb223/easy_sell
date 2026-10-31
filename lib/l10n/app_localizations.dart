@@ -3198,6 +3198,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Learned from a scan'**
   String get teach_fromScan;
+
+  /// No description provided for @settings_licenses.
+  ///
+  /// In en, this message translates to:
+  /// **'About & licenses'**
+  String get settings_licenses;
+
+  /// No description provided for @settings_licensesSub.
+  ///
+  /// In en, this message translates to:
+  /// **'Open-source software and AI training credits'**
+  String get settings_licensesSub;
 }
 
 class _AppLocalizationsDelegate

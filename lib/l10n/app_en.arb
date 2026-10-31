@@ -642,5 +642,7 @@
   "teach_failed": "Couldn't learn from that photo. Please try again.",
   "teach_removeTitle": "Remove this photo?",
   "teach_remove": "Remove",
-  "teach_fromScan": "Learned from a scan"
+  "teach_fromScan": "Learned from a scan",
+  "settings_licenses": "About & licenses",
+  "settings_licensesSub": "Open-source software and AI training credits"
 }

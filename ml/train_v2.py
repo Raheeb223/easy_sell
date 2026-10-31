@@ -17,6 +17,8 @@ Data is streamed from packed files in large sequential blocks (hard disk).
 """
 import argparse
 import json
+import queue
+import threading
 import math
 import random
 import sys
@@ -31,9 +33,36 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
 from embedder import ArcFace, Embedder, train_transform  # noqa: E402
-from eval_fewshot import evaluate, fewshot, fmt  # noqa: E402
-from packs import Pack, PackStream, entries_of  # noqa: E402
-from eval_fewshot import embed_entries  # noqa: E402
+from eval_fewshot import embed_entries, evaluate, fewshot, fmt  # noqa: E402
+from gpu_aug import train_batch  # noqa: E402
+from packs import Pack, PackStream, collate_raw, entries_of  # noqa: E402
+
+
+def gpu_batches(dl, dev):
+    """Decodes + augments the NEXT batch on its own CUDA stream in a thread
+    while the current one trains (nvJPEG does part of its work on the CPU)."""
+    q = queue.Queue(maxsize=3)
+    stream = torch.cuda.Stream()
+
+    def work():
+        try:
+            for x, y, gi in dl:
+                with torch.cuda.stream(stream):
+                    xb = train_batch(x, dev)
+                    yb = y.to(dev, non_blocking=True)
+                    ev = torch.cuda.Event()
+                    ev.record(stream)
+                q.put((xb, yb, gi, ev))
+        finally:
+            q.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+    while (item := q.get()) is not None:
+        xb, yb, gi, ev = item
+        torch.cuda.current_stream().wait_event(ev)
+        xb.record_stream(torch.cuda.current_stream())
+        yb.record_stream(torch.cuda.current_stream())
+        yield xb, yb, gi
 
 
 def main():
@@ -48,8 +77,10 @@ def main():
     ap.add_argument("--batch", type=int, default=192)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--holdout", type=int, default=1000)
-    ap.add_argument("--workers", type=int, default=5)
+    ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--cpu-aug", action="store_true", help="augment on the CPU (old path)")
     ap.add_argument("--resume", type=Path)
+    ap.add_argument("--max-steps", type=int, default=0, help="smoke test: stop each epoch early")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(0)
@@ -62,8 +93,8 @@ def main():
     counts = Counter(l for p in packs for l in p.labels)
     usable = sorted(l for l, n in counts.items() if n >= 2)
     rng = random.Random(0)
-    held = set(rng.sample([l for l in usable if l.startswith(("food:", "beauty:", "products:"))],
-                          min(a.holdout, len(usable) // 20)))
+    pool = [l for l in usable if l.startswith(("food:", "beauty:", "products:"))]
+    held = set(rng.sample(pool, min(a.holdout, len(pool) // 20)))
     train_labels = [l for l in usable if l not in held]
     ids = {l: i for i, l in enumerate(train_labels)}
     held_ids = {l: i for i, l in enumerate(sorted(held))}
@@ -81,9 +112,11 @@ def main():
         teacher = torch.from_numpy(np.load(tpath, mmap_mode="r")[:]).to(dev).half()
         print(f"teacher {a.teacher}: {tuple(teacher.shape)}", flush=True)
 
-    ds = PackStream(entries, train_transform())
-    dl = DataLoader(ds, batch_size=a.batch, num_workers=a.workers, pin_memory=True,
-                    drop_last=True, persistent_workers=True, prefetch_factor=6)
+    # GPU path: workers only read JPEG bytes; nvJPEG + gpu_aug do the rest.
+    ds = PackStream(entries, train_transform() if a.cpu_aug else None)
+    dl = DataLoader(ds, batch_size=a.batch, num_workers=a.workers, pin_memory=a.cpu_aug,
+                    drop_last=True, persistent_workers=True, prefetch_factor=4,
+                    collate_fn=None if a.cpu_aug else collate_raw)
     model = Embedder(a.backbone).to(dev).to(memory_format=torch.channels_last)
     head = ArcFace(model.proj.out_features, len(ids)).to(dev)
     opt = torch.optim.AdamW([
@@ -107,17 +140,23 @@ def main():
     for ep in range(start_ep, a.epochs):
         ds.set_epoch(ep)
         model.train()
-        t0, run_ce, run_kd = time.time(), 0.0, 0.0
-        for i, (x, y, gi) in enumerate(dl):
+        # Loss totals stay on the GPU: .item() every step would stall it.
+        t0 = t_win = time.time()
+        run_ce = torch.zeros((), device=dev)
+        run_kd = torch.zeros((), device=dev)
+        batches = dl if a.cpu_aug else gpu_batches(dl, dev)
+        for i, (x, y, gi) in enumerate(batches):
             f = step / warm if step < warm else 0.5 * (1 + math.cos(math.pi * (step - warm) / max(1, total - warm)))
             for g, b in zip(opt.param_groups, base_lr):
                 g["lr"] = b * f
-            x = x.to(dev, non_blocking=True).to(memory_format=torch.channels_last)
-            y = y.to(dev, non_blocking=True)
+            if a.cpu_aug:
+                x = x.to(dev, non_blocking=True).to(memory_format=torch.channels_last)
+                y = y.to(dev, non_blocking=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 emb = model(x)
             emb = emb.float()
-            loss = ce = head(emb, y)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                loss = ce = head(emb, y)
             if teacher is not None:
                 t = F.normalize(teacher[gi.to(dev)].float(), dim=1)
                 tau = 0.05
@@ -126,20 +165,27 @@ def main():
                 ss = (emb @ emb.T / tau).masked_fill(mask, -1e4)
                 kd = F.kl_div(F.log_softmax(ss, 1), F.softmax(ts, 1), reduction="batchmean")
                 loss = ce + a.kd * kd
-                run_kd += kd.item()
+                run_kd += kd.detach()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             opt.step()
-            run_ce += ce.item()
+            run_ce += ce.detach()
             step += 1
+            if a.max_steps and i + 1 >= a.max_steps:
+                break
             if i % 200 == 0:
-                print(f"ep {ep} it {i}/{steps_per_epoch} ce {run_ce / (i + 1):.3f} kd {run_kd / (i + 1):.3f} "
-                      f"{(i + 1) * a.batch / (time.time() - t0):.0f} img/s", flush=True)
+                # Speed over the last 200 steps (worker start-up excluded).
+                now = time.time()
+                rate = 200 * a.batch / (now - t_win) if i else 0
+                t_win = now
+                print(f"ep {ep} it {i}/{steps_per_epoch} ce {run_ce.item() / (i + 1):.3f} "
+                      f"kd {run_kd.item() / (i + 1):.3f} {rate:.0f} img/s", flush=True)
 
         res = evaluate(model, a.data, dev)
-        e, ys = embed_entries(model, held_entries, dev)
-        res["off_heldout"] = fewshot(e, ys)
+        if held_entries:
+            e, ys = embed_entries(model, held_entries, dev)
+            res["off_heldout"] = fewshot(e, ys)
         score = sum(r["shop"][0] for r in res.values()) / len(res)
         print(f"== epoch {ep} ({(time.time() - t0) / 60:.1f} min) score {score:.4f} :: {fmt(res)}", flush=True)
         log.append({"epoch": ep, "score": score, "res": res})

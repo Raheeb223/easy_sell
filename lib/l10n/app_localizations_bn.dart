@@ -1988,4 +1988,11 @@ class AppLocalizationsBn extends AppLocalizations {
 
   @override
   String get teach_fromScan => 'স্ক্যান থেকে শেখা';
+
+  @override
+  String get settings_licenses => 'অ্যাপ ও লাইসেন্স';
+
+  @override
+  String get settings_licensesSub =>
+      'ওপেন-সোর্স সফটওয়্যার ও AI প্রশিক্ষণের কৃতজ্ঞতা';
 }

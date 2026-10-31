@@ -19,8 +19,9 @@ import torch
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
-from embedder import RawBackbone, eval_transform  # noqa: E402
-from packs import Pack, PackList  # noqa: E402
+from embedder import RawBackbone  # noqa: E402
+from gpu_aug import eval_batch  # noqa: E402
+from packs import Pack, PackList, collate_raw  # noqa: E402
 
 
 @torch.no_grad()
@@ -31,7 +32,7 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--packs", nargs="+", required=True)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=2)
     a = ap.parse_args()
     dev = "cuda"
     model = RawBackbone(a.model).to(dev).eval().to(memory_format=torch.channels_last)
@@ -42,24 +43,30 @@ def main():
         base = len(entries)
         entries += [(str(p.path), int(o), int(n), 0, base + i)
                     for i, (o, n) in enumerate(zip(p.offsets, p.lengths))]
-    dl = DataLoader(PackList(entries, eval_transform()), batch_size=a.batch,
-                    num_workers=a.workers, pin_memory=True)
+    # Workers only read bytes; the GPU decodes and crops (gpu_aug.eval_batch).
+    dl = DataLoader(PackList(entries, None), batch_size=a.batch,
+                    num_workers=a.workers, collate_fn=collate_raw, prefetch_factor=4)
     out = None
     done = 0
     for x, _, gi in dl:
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            e = model(x.to(dev, non_blocking=True).to(memory_format=torch.channels_last))
+            e = model(eval_batch(x, dev))
         e = e.float().cpu().numpy().astype(np.float16)
         if out is None:
+            # Written under a temporary name and renamed when complete, so an
+            # interrupted run is never mistaken for a finished one.
             out = np.lib.format.open_memmap(
-                a.data / f"teacher_{a.name}.npy", mode="w+", dtype=np.float16,
+                a.data / f"teacher_{a.name}.partial.npy", mode="w+", dtype=np.float16,
                 shape=(len(entries), e.shape[1]))
         out[gi.numpy()] = e
         done += len(e)
         if done % (a.batch * 100) < a.batch:
             print(f"{done}/{len(entries)}", flush=True)
     out.flush()
-    print(f"teacher {a.name}: {out.shape} written", flush=True)
+    shape = out.shape
+    del out
+    (a.data / f"teacher_{a.name}.partial.npy").replace(a.data / f"teacher_{a.name}.npy")
+    print(f"teacher {a.name}: {shape} written", flush=True)
 
 
 if __name__ == "__main__":

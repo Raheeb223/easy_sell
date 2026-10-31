@@ -573,5 +573,7 @@
   "teach_failed": "এই ছবি থেকে শেখা যায়নি। আবার চেষ্টা করুন।",
   "teach_removeTitle": "এই ছবিটি সরাবেন?",
   "teach_remove": "সরান",
-  "teach_fromScan": "স্ক্যান থেকে শেখা"
+  "teach_fromScan": "স্ক্যান থেকে শেখা",
+  "settings_licenses": "অ্যাপ ও লাইসেন্স",
+  "settings_licensesSub": "ওপেন-সোর্স সফটওয়্যার ও AI প্রশিক্ষণের কৃতজ্ঞতা"
 }

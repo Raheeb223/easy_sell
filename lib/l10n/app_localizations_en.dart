@@ -2000,4 +2000,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get teach_fromScan => 'Learned from a scan';
+
+  @override
+  String get settings_licenses => 'About & licenses';
+
+  @override
+  String get settings_licensesSub =>
+      'Open-source software and AI training credits';
 }

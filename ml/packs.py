@@ -50,6 +50,12 @@ class PackStream(IterableDataset):
         self.seed = seed
         self.epoch = 0
 
+    def _item(self, b):
+        # Without a transform the GPU decodes and augments (gpu_aug.py).
+        if self.transform is None:
+            return b
+        return self.transform(decode(b))
+
     def set_epoch(self, e):
         self.epoch = e
 
@@ -80,10 +86,10 @@ class PackStream(IterableDataset):
                 rng.shuffle(buf)
                 while len(buf) > self.buffer // 2:
                     b, y, gi = buf.pop()
-                    yield self.transform(decode(b)), y, gi
+                    yield self._item(b), y, gi
         rng.shuffle(buf)
         for b, y, gi in buf:
-            yield self.transform(decode(b)), y, gi
+            yield self._item(b), y, gi
         for f in files.values():
             f.close()
 
@@ -105,7 +111,10 @@ class PackList(Dataset):
         if f is None:
             f = self._files[path] = open(path, "rb")
         f.seek(off)
-        return self.transform(decode(f.read(ln))), y, gi
+        b = f.read(ln)
+        if self.transform is None:
+            return b, y, gi
+        return self.transform(decode(b)), y, gi
 
 
 def entries_of(pack: Pack, keep, label_ids, start_index=0):
@@ -115,3 +124,18 @@ def entries_of(pack: Pack, keep, label_ids, start_index=0):
         if lab in keep:
             out.append((str(pack.path), int(off), int(ln), label_ids[lab], start_index + i))
     return out
+
+
+def collate_raw(batch):
+    """A batch of JPEG bytes as ONE tensor plus lengths. Windows moves every
+    tensor between processes through its own shared-memory file, so 192
+    small tensors per batch were the training bottleneck; one blob is not."""
+    xs, ys, gis = zip(*batch)
+    blob = torch.frombuffer(bytearray(b"".join(xs)), dtype=torch.uint8)
+    return (blob, torch.tensor([len(x) for x in xs])), torch.tensor(ys), torch.tensor(gis)
+
+
+def split_raw(raw):
+    """(blob, lengths) -> list of per-image byte tensors (views, no copy)."""
+    blob, lengths = raw
+    return list(torch.split(blob, lengths.tolist()))
