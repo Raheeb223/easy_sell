@@ -36,6 +36,9 @@ class FakeSpeechCapture implements SpeechCapture {
   Future<bool> hasPermission() async => permissionOk;
 
   @override
+  Future<void> warmUp() async {}
+
+  @override
   Future<void> start({
     required String localeId,
     List<String> hints = const [],
@@ -135,4 +138,10 @@ class FakeVoiceRepo implements VoiceSaleRepository {
 
   @override
   void invalidate() {}
+
+  @override
+  Future<void> warmUp(
+    List<Product> products,
+    Map<String, double> recentUnits,
+  ) async {}
 }

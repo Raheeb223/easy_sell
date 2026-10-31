@@ -1,5 +1,4 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/error/failure.dart';
@@ -39,8 +38,12 @@ class VisionScanRepository {
     required List<Product> products,
   }) async {
     try {
-      final photoF = _photo(imageBytes);
-      final labelF = _label(imageBytes);
+      final watch = Stopwatch()..start();
+      var photoMs = 0, labelMs = 0;
+      final photoF = _photo(imageBytes)
+          .whenComplete(() => photoMs = watch.elapsedMilliseconds);
+      final labelF = _label(imageBytes)
+          .whenComplete(() => labelMs = watch.elapsedMilliseconds);
       final embedding = await photoF;
       final label = await labelF;
 
@@ -60,12 +63,28 @@ class VisionScanRepository {
         readName: label.headline,
         readSize: QueryText.findSize(label.text),
       );
+      debugPrint('scan-timing: photo ${photoMs}ms label ${labelMs}ms '
+          'total ${watch.elapsedMilliseconds}ms');
       return Result.success(ScanRecognition(result, embedding));
     } catch (e) {
       return const Result.failure(
         UnexpectedFailure('Could not recognize the product. Please try again.'),
       );
     }
+  }
+
+  /// Gets the model, ML Kit and the fingerprints ready while the camera
+  /// starts, so the first scan is as fast as the rest. Never throws.
+  Future<void> warmUp() => Future.wait<void>([
+        _quietly(() async => (await _embedder).warmUp()),
+        _quietly(_reader.warmUp),
+        _quietly(() => _store.similarities(Float32List(VisionEmbedder.dim))),
+      ]);
+
+  static Future<void> _quietly(Future<Object?> Function() f) async {
+    try {
+      await f();
+    } catch (_) {}
   }
 
   /// The fingerprint, or null if the model could not run (the scan then

@@ -21,6 +21,10 @@ class Heard {
 abstract class SpeechCapture {
   Future<bool> hasPermission();
 
+  /// Readies the recogniser ahead of the first tap, if the mic is already
+  /// allowed (it never asks for permission).
+  Future<void> warmUp();
+
   /// Starts listening in [localeId] (`bn_BD`, `en_US`). [hints] are product
   /// names and learned words the recogniser should expect.
   Future<void> start({
@@ -56,9 +60,15 @@ class DeviceSpeechCapture implements SpeechCapture {
   bool _triedOnDevice = false;
   bool _fellBack = false;
 
-  /// Max length of one sale sentence, and the pause that ends it.
+  /// Max length of one sale sentence, and the pause that ends it. Android's
+  /// recogniser usually ends the sentence sooner by itself; this is the cap
+  /// on waiting in silence, kept short so the sale is read quickly.
   static const listenFor = Duration(seconds: 20);
-  static const pauseFor = Duration(seconds: 3);
+  static const pauseFor = Duration(seconds: 2);
+
+  /// Asked-for locale -> the recogniser's spelling. Listing the locales is a
+  /// slow round trip on Android, so it happens once.
+  final _locales = <String, String>{};
 
   Future<bool> _init() async {
     if (_ready) return true;
@@ -68,6 +78,16 @@ class DeviceSpeechCapture implements SpeechCapture {
 
   @override
   Future<bool> hasPermission() => _init();
+
+  @override
+  Future<void> warmUp() async {
+    try {
+      if (!await _stt.hasPermission) return;
+      if (!await _init()) return;
+      await _bestLocale('bn_BD');
+      await _bestLocale('en_US');
+    } catch (_) {}
+  }
 
   @override
   Future<void> start({
@@ -109,18 +129,23 @@ class DeviceSpeechCapture implements SpeechCapture {
   /// The recogniser's own spelling of the locale (`bn-BD` vs `bn_BD`), or the
   /// closest language match, or the request unchanged.
   Future<String> _bestLocale(String want) async {
+    if (_locales[want] case final String known) return known;
     try {
       final all = await _stt.locales();
       final norm = want.replaceAll('-', '_').toLowerCase();
       for (final l in all) {
         if (l.localeId.replaceAll('-', '_').toLowerCase() == norm) {
-          return l.localeId;
+          return _locales[want] = l.localeId;
         }
       }
       final lang = norm.split('_').first;
       for (final l in all) {
-        if (l.localeId.toLowerCase().startsWith(lang)) return l.localeId;
+        if (l.localeId.toLowerCase().startsWith(lang)) {
+          return _locales[want] = l.localeId;
+        }
       }
+      // Listed, but no match: the request itself is the best guess.
+      if (all.isNotEmpty) _locales[want] = want;
     } catch (_) {}
     return want;
   }

@@ -12,6 +12,7 @@ started again after any interruption. Logs go to <runs>/logs/.
         --teacher-name siglip --teacher-model vit_base_patch16_siglip_224.webli
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -22,15 +23,16 @@ HERE = Path(__file__).resolve().parent
 PY = sys.executable
 
 
-def run(args, log: Path):
+def run(args, log: Path, check=True):
     log.parent.mkdir(parents=True, exist_ok=True)
     print(f"[pipeline] {' '.join(args)}  > {log}", flush=True)
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     with open(log, "a", encoding="utf-8") as f:
         code = subprocess.call([PY, "-I", *args], stdout=f, stderr=subprocess.STDOUT,
                                cwd=HERE.parent, env=env)
-    if code != 0:
+    if code != 0 and check:
         sys.exit(f"[pipeline] stage failed ({code}); see {log}")
+    return code
 
 
 def builder_running():
@@ -42,6 +44,25 @@ def builder_running():
     return out.stdout.strip() not in ("", "0")
 
 
+def bench(ckpt: Path) -> float:
+    """Mean shop200 top-1 on the fixed benchmarks (RP2K, Grocery). The OFF
+    held-out set depends on a run's packs, so runs are compared without it."""
+    import torch
+    res = torch.load(ckpt, map_location="cpu", weights_only=False)["res"]
+    fixed = [r["shop"][0] for k, r in res.items() if k != "off_heldout"]
+    return sum(fixed) / len(fixed)
+
+
+def shipped_bench(runs: Path, name: str):
+    """Score of the model now in the app: shipped.json, or else the best run
+    that already has an exported model (runs from before shipped.json)."""
+    rec = runs / "shipped.json"
+    if rec.exists():
+        return json.loads(rec.read_text())["bench"]
+    done = [d for d in runs.iterdir() if d.name != name and list(d.glob("export/*.tflite"))]
+    return max((bench(d / "best.pt") for d in done if (d / "best.pt").exists()), default=None)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=Path, required=True)
@@ -51,6 +72,7 @@ def main():
     ap.add_argument("--teacher-model", default=None)
     ap.add_argument("--backbone", default="mobilenetv3_large_100.ra_in1k")
     ap.add_argument("--epochs", type=int, default=14)
+    ap.add_argument("--batch", type=int, default=192)
     ap.add_argument("--packs", nargs="+", default=["off_index", "grocery_train_index"])
     ap.add_argument("--wait-download", action="store_true",
                     help="wait for a running build_off.py first")
@@ -75,12 +97,29 @@ def main():
              "--packs", *packs, "--backbone", a.backbone, "--epochs", str(a.epochs)]
     if a.teacher_name:
         train += ["--teacher", tname]
-    if (out / "last.pt").exists():
-        train += ["--resume", str(out / "last.pt")]
-    run(train, logs / f"train_{a.name}.log")
+    # Bigger datasets mean a bigger product head; if the GPU runs out of
+    # memory, carry on with a smaller batch rather than stopping.
+    log, batch = logs / f"train_{a.name}.log", a.batch
+    while True:
+        resume = ["--resume", str(out / "last.pt")] if (out / "last.pt").exists() else []
+        code = run(train + ["--batch", str(batch), *resume], log, check=False)
+        if code == 0:
+            break
+        tail = log.read_text(encoding="utf-8", errors="replace")[-4000:]
+        if "out of memory" not in tail or batch <= 96:
+            sys.exit(f"[pipeline] stage failed ({code}); see {log}")
+        batch -= 32
+        print(f"[pipeline] GPU out of memory; retrying with batch {batch}", flush=True)
 
+    # Only replace the app's model with a better one.
+    score, current = bench(out / "best.pt"), shipped_bench(a.runs, a.name)
+    print(f"[pipeline] {a.name} bench {score:.4f}, shipped {current}", flush=True)
+    if current is not None and score <= current:
+        print("[pipeline] not better than the shipped model; keeping it", flush=True)
+        return
     run(["ml/export_tflite.py", "--checkpoint", str(out / "best.pt"), "--data", str(a.data),
          "--work", str(out / "export")], logs / f"export_{a.name}.log")
+    (a.runs / "shipped.json").write_text(json.dumps({"run": a.name, "bench": score}))
     print("[pipeline] done", flush=True)
 
 

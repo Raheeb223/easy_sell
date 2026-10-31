@@ -49,6 +49,9 @@ abstract class IndexedScanRepo implements VisionScanRepository {
   }
 
   @override
+  Future<void> warmUp() async {}
+
+  @override
   Future<void> learn(String productId, Embedding embedding) async =>
       learned.add(productId);
 }

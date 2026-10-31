@@ -9,6 +9,7 @@ import '../../../l10n/app_localizations.dart';
 import '../../inventory/domain/product.dart';
 import '../../inventory/presentation/inventory_controller.dart';
 import '../data/scan_camera.dart';
+import '../data/vision_scan_repository.dart';
 import '../domain/scan_item.dart';
 import 'product_picker_sheet.dart';
 import 'scan_session_controller.dart';
@@ -65,6 +66,9 @@ class _ScanSessionScreenState extends ConsumerState<ScanSessionScreen>
     _camera = ref.read(scanCameraProvider);
     WidgetsBinding.instance.addObserver(this);
     _start();
+    // While the camera starts: load the model and label reader, so the first
+    // capture is recognised as fast as every later one.
+    ref.read(visionScanRepositoryProvider).warmUp().ignore();
   }
 
   Future<void> _start() async {

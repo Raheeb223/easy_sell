@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -40,6 +41,11 @@ class LabelReader {
       }
     }
     return LabelText(text: lines.join('\n'), headline: biggest?.text.trim());
+  }
+
+  /// Reads a blank image once: ML Kit loads its model on the first read.
+  Future<void> warmUp() async {
+    await read(img.encodeJpg(img.Image(width: 64, height: 64)));
   }
 
   Future<void> close() => _recognizer.close();

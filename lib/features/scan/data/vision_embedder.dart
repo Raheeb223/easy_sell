@@ -26,7 +26,7 @@ class VisionEmbedder {
   final SendPort _send;
   final Isolate _isolate;
   int _seq = 0;
-  final _pending = <int, Completer<Embedding>>{};
+  final _pending = <int, Completer<Float32List>>{};
   late final StreamSubscription<dynamic> _sub;
 
   static Future<VisionEmbedder> load() async {
@@ -51,20 +51,23 @@ class VisionEmbedder {
     if (result is String) {
       c.completeError(StateError(result));
     } else {
-      final (Float32List v, Uint8List thumb) = result as (Float32List, Uint8List);
-      c.complete(Embedding(v, thumb));
+      c.complete(result as Float32List);
     }
   }
 
   /// Fingerprint of a JPEG photo: the centre square, like the scan frame.
   Future<Embedding> embedJpeg(Uint8List jpeg) async {
     final rgba = await _decodeSquare(jpeg);
-    return _run(rgba);
+    return Embedding(await _run(rgba), rgba);
   }
 
-  Future<Embedding> _run(Uint8List rgba) {
+  /// Runs the model once on a blank frame: the first run sets up the CPU
+  /// kernels, so doing it before the first scan keeps that scan fast.
+  Future<void> warmUp() => _run(Uint8List(size * size * 4));
+
+  Future<Float32List> _run(Uint8List rgba) {
     final id = _seq++;
-    final c = Completer<Embedding>();
+    final c = Completer<Float32List>();
     _pending[id] = c;
     _send.send((id, TransferableTypedData.fromList([rgba])));
     return c.future;
@@ -108,13 +111,28 @@ class VisionEmbedder {
   }
 }
 
-/// A fingerprint plus the 224px thumbnail it came from (kept so a future
-/// model can re-embed without new photos).
+/// A fingerprint plus the 224px frame it came from (saved as a thumbnail so a
+/// future model can re-embed without new photos).
 class Embedding {
-  const Embedding(this.vector, this.thumbJpeg);
+  Embedding(this.vector, this._rgba);
   final Float32List vector;
-  final Uint8List thumbJpeg;
+  final Uint8List _rgba;
+  Future<Uint8List>? _thumb;
+
+  /// The frame as a JPEG. Encoded only when the fingerprint is saved, in the
+  /// background, so it never slows a scan.
+  Future<Uint8List> thumbJpeg() => _thumb ??= Isolate.run(() => _encodeThumb(_rgba));
 }
+
+Uint8List _encodeThumb(Uint8List rgba) => img.encodeJpg(
+      img.Image.fromBytes(
+        width: VisionEmbedder.size,
+        height: VisionEmbedder.size,
+        bytes: rgba.buffer,
+        numChannels: 4,
+      ),
+      quality: 80,
+    );
 
 /// Background isolate: owns the TFLite interpreter.
 Future<void> _worker((SendPort, TransferableTypedData) args) async {
@@ -157,16 +175,7 @@ Future<void> _worker((SendPort, TransferableTypedData) args) async {
       interpreter.getOutputTensor(0).copyTo(output.buffer.asUint8List());
       final v = Float32List.fromList(output);
       _normalize(v);
-      final thumb = img.encodeJpg(
-        img.Image.fromBytes(
-          width: size,
-          height: size,
-          bytes: rgba.buffer,
-          numChannels: 4,
-        ),
-        quality: 80,
-      );
-      reply.send((id, (v, thumb)));
+      reply.send((id, v));
     } catch (e) {
       reply.send((id, 'inference failed: $e'));
     }

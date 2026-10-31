@@ -146,6 +146,8 @@ class VoiceController extends Notifier<VoiceSaleState> {
     // Keep the catalogue loaded while voice is in use: the parser and the
     // recogniser's hints both need it the moment the shopkeeper speaks.
     ref.listen(productsStreamProvider, (_, _) {});
+    // Get the recogniser ready before the mic is tapped (never prompts).
+    ref.read(speechCaptureProvider).warmUp().ignore();
     ref.onDispose(_stopWatching);
     ref.onDispose(() => _capTimer?.cancel());
     return const VoiceSaleState();
@@ -184,6 +186,13 @@ class VoiceController extends Notifier<VoiceSaleState> {
     if (_session != session) return;
 
     ref.read(voiceHapticsProvider).recordingStarted();
+    // While the shopkeeper speaks: build the parser for this catalogue, so
+    // the sale is read the moment the sentence ends.
+    final repo = ref.read(voiceSaleRepositoryProvider);
+    ref
+        .read(recentUnitsSoldProvider.future)
+        .then((units) => repo.warmUp(_products, units))
+        .ignore();
     final cap = ref.read(maxRecordingDurationProvider);
     _capTimer?.cancel();
     _capTimer = Timer(cap + const Duration(seconds: 2), () {

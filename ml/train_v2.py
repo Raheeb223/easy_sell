@@ -65,6 +65,29 @@ def gpu_batches(dl, dev):
         yield xb, yb, gi
 
 
+def load_teacher(path: Path, dev, max_bytes=1.5e9, dim=256):
+    """Teacher embeddings on the GPU. When they are too big to sit next to the
+    model (millions of photos), keep only their top `dim` directions: the KD
+    loss uses photo-to-photo similarities, which these preserve."""
+    t = np.load(path, mmap_mode="r")
+    if t.shape[0] * t.shape[1] * 2 <= max_bytes:
+        return torch.from_numpy(t[:]).to(dev).half()
+    chunks = range(0, t.shape[0], 200_000)
+    gram = torch.zeros(t.shape[1], t.shape[1], device=dev, dtype=torch.float64)
+    for s in chunks:
+        x = F.normalize(torch.from_numpy(t[s:s + 200_000].astype(np.float32)).to(dev), dim=1)
+        gram += (x.T @ x).double()
+    vals, vecs = torch.linalg.eigh(gram)
+    keep = vecs[:, -dim:].float()
+    print(f"teacher reduced {t.shape[1]} -> {dim} dims, keeping "
+          f"{vals[-dim:].sum().item() / vals.sum().item():.1%} of its energy", flush=True)
+    out = torch.empty(t.shape[0], dim, device=dev, dtype=torch.half)
+    for s in chunks:
+        x = F.normalize(torch.from_numpy(t[s:s + 200_000].astype(np.float32)).to(dev), dim=1)
+        out[s:s + len(x)] = (x @ keep).half()
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=Path, required=True)
@@ -109,7 +132,7 @@ def main():
     teacher = None
     if a.teacher:
         tpath = a.data / f"teacher_{a.teacher}.npy"
-        teacher = torch.from_numpy(np.load(tpath, mmap_mode="r")[:]).to(dev).half()
+        teacher = load_teacher(tpath, dev)
         print(f"teacher {a.teacher}: {tuple(teacher.shape)}", flush=True)
 
     # GPU path: workers only read JPEG bytes; nvJPEG + gpu_aug do the rest.

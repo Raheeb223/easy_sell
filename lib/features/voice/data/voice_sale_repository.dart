@@ -25,21 +25,7 @@ class VoiceSaleRepository {
     Map<String, double> recentUnits = const {},
   }) async {
     try {
-      final aliases = await _aliases();
-      final parser = SaleParser(
-        products: [
-          for (final p in products)
-            ParserProduct(
-              id: p.id,
-              name: p.name,
-              brand: p.brand,
-              variant: p.variant,
-              unit: p.unit.name,
-              aliases: aliases[p.id] ?? const [],
-            ),
-        ],
-        recentUnits: recentUnits,
-      );
+      final parser = await _parserFor(products, recentUnits);
       return Result.success(
         parser.parse(transcript, alternatives: alternatives),
       );
@@ -93,6 +79,51 @@ class VoiceSaleRepository {
     });
     _cache = null;
     _db.notify({'product_aliases'});
+  }
+
+  // Building a parser indexes every product name (trigrams, phonetics,
+  // Bangla transliteration), so one is kept until its inputs change.
+  SaleParser? _parser;
+  (List<Product>, Map<String, List<String>>, Map<String, double>)? _parserKey;
+
+  Future<SaleParser> _parserFor(
+    List<Product> products,
+    Map<String, double> recentUnits,
+  ) async {
+    final aliases = await _aliases();
+    final key = _parserKey;
+    final parser = _parser;
+    if (parser != null &&
+        key != null &&
+        identical(key.$1, products) &&
+        identical(key.$2, aliases) &&
+        identical(key.$3, recentUnits)) {
+      return parser;
+    }
+    _parserKey = (products, aliases, recentUnits);
+    return _parser = SaleParser(
+      products: [
+        for (final p in products)
+          ParserProduct(
+            id: p.id,
+            name: p.name,
+            brand: p.brand,
+            variant: p.variant,
+            unit: p.unit.name,
+            aliases: aliases[p.id] ?? const [],
+          ),
+      ],
+      recentUnits: recentUnits,
+    );
+  }
+
+  /// Builds the parser ahead of the first sentence.
+  Future<void> warmUp(
+    List<Product> products,
+    Map<String, double> recentUnits,
+  ) async {
+    if (products.isEmpty) return;
+    await _parserFor(products, recentUnits);
   }
 
   Map<String, List<String>>? _cache;

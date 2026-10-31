@@ -74,7 +74,7 @@ class EmbeddingStore {
     required String source,
   }) async {
     final id = newId();
-    final thumb = await _photos.save(embedding.thumbJpeg, 'fp_$id.jpg');
+    final thumb = await _photos.save(await embedding.thumbJpeg(), 'fp_$id.jpg');
     final dropped = <String>[];
     await _db.db.transaction((txn) async {
       await txn.insert('product_embeddings', {
