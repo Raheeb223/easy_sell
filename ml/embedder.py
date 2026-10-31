@@ -101,6 +101,29 @@ class ArcFace(nn.Module):
         logits = cos.scatter(1, labels[:, None], target) * self.s
         return F.cross_entropy(logits, labels, label_smoothing=0.1)
 
+
+class PartialArcFace(nn.Module):
+    """ArcFace over the batch's own products plus a random sample of the rest
+    (Partial FC, An et al. 2022). With ~1M products the full head's logits,
+    gradients and Adam state do not fit next to the model in 12 GB; here only
+    the sampled rows get a (sparse) gradient. Train it with SparseAdam."""
+
+    def __init__(self, dim: int, classes: int, sample: int = 65536, s: float = 30.0, m: float = 0.3):
+        super().__init__()
+        self.w = nn.Embedding(classes, dim, sparse=True)
+        nn.init.normal_(self.w.weight, std=0.01)
+        self.sample, self.s, self.m = sample, s, m
+
+    def forward(self, emb, labels):
+        n = self.w.num_embeddings
+        idx = torch.cat([labels, torch.randint(0, n, (self.sample,), device=labels.device)]).unique()
+        labels = torch.searchsorted(idx, labels)
+        cos = F.linear(emb, F.normalize(self.w(idx), dim=1)).float()
+        tc = cos.gather(1, labels[:, None]).clamp(-1 + 1e-7, 1 - 1e-7)
+        target = torch.cos(torch.acos(tc) + self.m)
+        logits = cos.scatter(1, labels[:, None], target) * self.s
+        return F.cross_entropy(logits, labels, label_smoothing=0.1)
+
 def train_transform():
     # Shop conditions: handheld, tilted, partly covered by fingers, odd light.
     # No horizontal flip -- mirrored label text never happens in a real scan.

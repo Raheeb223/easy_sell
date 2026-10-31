@@ -1268,6 +1268,12 @@ abstract class AppLocalizations {
   /// **'Not identified'**
   String get scan_notIdentified;
 
+  /// No description provided for @scan_addAsNew.
+  ///
+  /// In en, this message translates to:
+  /// **'Add as new product'**
+  String get scan_addAsNew;
+
   /// No description provided for @scan_topSellers.
   ///
   /// In en, this message translates to:
@@ -2119,6 +2125,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Couldn\'t match anything you said.'**
   String get voice_errNoMatch;
+
+  /// No description provided for @voice_errNoProducts.
+  ///
+  /// In en, this message translates to:
+  /// **'Add your products first. Voice sells from your product list.'**
+  String get voice_errNoProducts;
 
   /// No description provided for @voice_errMicDenied.
   ///

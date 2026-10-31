@@ -32,15 +32,16 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
-from embedder import ArcFace, Embedder, train_transform  # noqa: E402
+from embedder import ArcFace, Embedder, PartialArcFace, train_transform  # noqa: E402
 from eval_fewshot import embed_entries, evaluate, fewshot, fmt  # noqa: E402
 from gpu_aug import train_batch  # noqa: E402
 from packs import Pack, PackStream, collate_raw, entries_of  # noqa: E402
 
 
-def gpu_batches(dl, dev):
+def gpu_batches(dl, dev, teacher=None):
     """Decodes + augments the NEXT batch on its own CUDA stream in a thread
-    while the current one trains (nvJPEG does part of its work on the CPU)."""
+    while the current one trains (nvJPEG does part of its work on the CPU).
+    The batch's teacher rows (kept in RAM) are copied over on that stream too."""
     q = queue.Queue(maxsize=3)
     stream = torch.cuda.Stream()
 
@@ -50,9 +51,10 @@ def gpu_batches(dl, dev):
                 with torch.cuda.stream(stream):
                     xb = train_batch(x, dev)
                     yb = y.to(dev, non_blocking=True)
+                    tb = None if teacher is None else teacher[gi].pin_memory().to(dev, non_blocking=True)
                     ev = torch.cuda.Event()
                     ev.record(stream)
-                q.put((xb, yb, gi, ev))
+                q.put((xb, yb, tb, ev))
             q.put(None)
         except BaseException as e:  # surfaced in the training loop, not swallowed
             q.put(e)
@@ -61,20 +63,23 @@ def gpu_batches(dl, dev):
     while (item := q.get()) is not None:
         if isinstance(item, BaseException):
             raise RuntimeError("data loading failed") from item
-        xb, yb, gi, ev = item
+        xb, yb, tb, ev = item
         torch.cuda.current_stream().wait_event(ev)
-        xb.record_stream(torch.cuda.current_stream())
-        yb.record_stream(torch.cuda.current_stream())
-        yield xb, yb, gi
+        for b in (xb, yb, tb):
+            if b is not None:
+                b.record_stream(torch.cuda.current_stream())
+        yield xb, yb, tb
 
 
 def load_teacher(path: Path, dev, max_bytes=1.5e9, dim=256):
-    """Teacher embeddings on the GPU. When they are too big to sit next to the
-    model (millions of photos), keep only their top `dim` directions: the KD
-    loss uses photo-to-photo similarities, which these preserve."""
+    """Teacher embeddings, kept in RAM (GPU memory is for training: when it
+    overflows, Windows silently pages it to RAM and training runs ~15x slower).
+    When they are too big (millions of photos), keep only their top `dim`
+    directions: the KD loss uses photo-to-photo similarities, which these
+    preserve. The reduction itself runs on the GPU before training starts."""
     t = np.load(path, mmap_mode="r")
     if t.shape[0] * t.shape[1] * 2 <= max_bytes:
-        return torch.from_numpy(t[:]).to(dev).half()
+        return torch.from_numpy(np.array(t, dtype=np.float16))  # copy: random rows off a hard disk are slow
     chunks = range(0, t.shape[0], 200_000)
     gram = torch.zeros(t.shape[1], t.shape[1], device=dev, dtype=torch.float64)
     for s in chunks:
@@ -84,10 +89,12 @@ def load_teacher(path: Path, dev, max_bytes=1.5e9, dim=256):
     keep = vecs[:, -dim:].float()
     print(f"teacher reduced {t.shape[1]} -> {dim} dims, keeping "
           f"{vals[-dim:].sum().item() / vals.sum().item():.1%} of its energy", flush=True)
-    out = torch.empty(t.shape[0], dim, device=dev, dtype=torch.half)
+    out = torch.empty(t.shape[0], dim, dtype=torch.half)
     for s in chunks:
         x = F.normalize(torch.from_numpy(t[s:s + 200_000].astype(np.float32)).to(dev), dim=1)
-        out[s:s + len(x)] = (x @ keep).half()
+        out[s:s + len(x)] = (x @ keep).half().cpu()
+    del gram, vecs, keep, x
+    torch.cuda.empty_cache()
     return out
 
 
@@ -98,6 +105,8 @@ def main():
     ap.add_argument("--packs", nargs="+", default=["off_index", "grocery_train_index"])
     ap.add_argument("--backbone", default="mobilenetv3_large_100.ra_in1k")
     ap.add_argument("--teacher", default=None, help="name used by embed_teacher.py")
+    ap.add_argument("--head", choices=["auto", "full", "partial"], default="auto",
+                    help="partial FC for very many products (auto: above 400k)")
     ap.add_argument("--kd", type=float, default=1.0)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=192)
@@ -114,8 +123,15 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     dev = "cuda"
+    # Use only the GPU memory that is free now (the desktop holds some). Past
+    # that, PyTorch raises a real out-of-memory error, which run_pipeline
+    # answers with a smaller batch, instead of Windows silently paging GPU
+    # memory to RAM.
+    free, total_mem = torch.cuda.mem_get_info()
+    torch.cuda.set_per_process_memory_fraction(max(0.5, (free - 768 * 2**20) / total_mem))
+    print(f"GPU memory for training: {(free - 768 * 2**20) / 2**30:.1f} GB", flush=True)
 
-    packs = [Pack(a.data, s) for s in a.packs]
+    packs =[Pack(a.data, s) for s in a.packs]
     counts = Counter(l for p in packs for l in p.labels)
     usable = sorted(l for l, n in counts.items() if n >= 2)
     rng = random.Random(0)
@@ -144,13 +160,21 @@ def main():
                     drop_last=True, persistent_workers=True, prefetch_factor=4,
                     collate_fn=None if a.cpu_aug else collate_raw)
     model = Embedder(a.backbone).to(dev).to(memory_format=torch.channels_last)
-    head = ArcFace(model.proj.out_features, len(ids)).to(dev)
-    opt = torch.optim.AdamW([
+    partial = a.head == "partial" or (a.head == "auto" and len(ids) > 400_000)
+    groups = [
         {"params": model.backbone.parameters(), "lr": a.lr * 0.5},
         {"params": list(model.proj.parameters()) + list(model.bn.parameters()), "lr": a.lr},
-        {"params": head.parameters(), "lr": a.lr * 10, "weight_decay": 0},
-    ], weight_decay=5e-5)
-    base_lr = [g["lr"] for g in opt.param_groups]
+    ]
+    if partial:
+        head = PartialArcFace(model.proj.out_features, len(ids)).to(dev)
+        opts = [torch.optim.AdamW(groups, weight_decay=5e-5),
+                torch.optim.SparseAdam(head.parameters(), lr=a.lr * 10)]
+        print(f"head: partial FC, {head.sample} sampled of {len(ids)} products", flush=True)
+    else:
+        head = ArcFace(model.proj.out_features, len(ids)).to(dev)
+        groups.append({"params": head.parameters(), "lr": a.lr * 10, "weight_decay": 0})
+        opts = [torch.optim.AdamW(groups, weight_decay=5e-5)]
+    base_lr = [[g["lr"] for g in o.param_groups] for o in opts]
     steps_per_epoch = len(entries) // a.batch
     total = a.epochs * steps_per_epoch
     warm = min(steps_per_epoch, 2000)
@@ -159,10 +183,12 @@ def main():
         ck = torch.load(a.resume, map_location="cpu")
         model.load_state_dict(ck["model"])
         head.load_state_dict(ck["head"])
-        opt.load_state_dict(ck["opt"])
+        for o, s in zip(opts, ck["opts"] if "opts" in ck else [ck["opt"]]):
+            o.load_state_dict(s)
         start_ep = ck["epoch"] + 1
 
     best, log, step = -1.0, [], start_ep * steps_per_epoch
+    peak_rate, slow = 0.0, 0
     for ep in range(start_ep, a.epochs):
         ds.set_epoch(ep)
         model.train()
@@ -170,21 +196,23 @@ def main():
         t0 = t_win = time.time()
         run_ce = torch.zeros((), device=dev)
         run_kd = torch.zeros((), device=dev)
-        batches = dl if a.cpu_aug else gpu_batches(dl, dev)
-        for i, (x, y, gi) in enumerate(batches):
+        batches = dl if a.cpu_aug else gpu_batches(dl, dev, teacher)
+        for i, (x, y, tb) in enumerate(batches):
             f = step / warm if step < warm else 0.5 * (1 + math.cos(math.pi * (step - warm) / max(1, total - warm)))
-            for g, b in zip(opt.param_groups, base_lr):
-                g["lr"] = b * f
+            for o, lrs in zip(opts, base_lr):
+                for g, b in zip(o.param_groups, lrs):
+                    g["lr"] = b * f
             if a.cpu_aug:
                 x = x.to(dev, non_blocking=True).to(memory_format=torch.channels_last)
                 y = y.to(dev, non_blocking=True)
+                tb = None if teacher is None else teacher[tb].to(dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 emb = model(x)
             emb = emb.float()
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 loss = ce = head(emb, y)
             if teacher is not None:
-                t = F.normalize(teacher[gi.to(dev)].float(), dim=1)
+                t = F.normalize(tb.float(), dim=1)
                 tau = 0.05
                 mask = torch.eye(len(t), device=dev, dtype=torch.bool)
                 ts = (t @ t.T / tau).masked_fill(mask, -1e4)
@@ -192,10 +220,12 @@ def main():
                 kd = F.kl_div(F.log_softmax(ss, 1), F.softmax(ts, 1), reduction="batchmean")
                 loss = ce + a.kd * kd
                 run_kd += kd.detach()
-            opt.zero_grad(set_to_none=True)
+            for o in opts:
+                o.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            opt.step()
+            for o in opts:
+                o.step()
             run_ce += ce.detach()
             step += 1
             if a.max_steps and i + 1 >= a.max_steps:
@@ -207,16 +237,26 @@ def main():
                 t_win = now
                 print(f"ep {ep} it {i}/{steps_per_epoch} ce {run_ce.item() / (i + 1):.3f} "
                       f"kd {run_kd.item() / (i + 1):.3f} {rate:.0f} img/s", flush=True)
+                # A sudden lasting slowdown means GPU memory is being paged to
+                # RAM. Stop (last.pt is kept) so run_pipeline restarts with a
+                # smaller batch, rather than crawling on for days.
+                peak_rate = max(peak_rate, rate)
+                slow = slow + 1 if i >= 400 and rate < 0.35 * peak_rate else 0
+                if slow >= 2:
+                    raise RuntimeError(f"CUDA out of memory: GPU memory paged to RAM "
+                                       f"({rate:.0f} vs {peak_rate:.0f} img/s)")
 
         res = evaluate(model, a.data, dev)
         if held_entries:
             e, ys = embed_entries(model, held_entries, dev)
             res["off_heldout"] = fewshot(e, ys)
+            del e, ys
+        torch.cuda.empty_cache()
         score = sum(r["shop"][0] for r in res.values()) / len(res)
         print(f"== epoch {ep} ({(time.time() - t0) / 60:.1f} min) score {score:.4f} :: {fmt(res)}", flush=True)
         log.append({"epoch": ep, "score": score, "res": res})
         ck = {"backbone": a.backbone, "model": model.state_dict(), "head": head.state_dict(),
-              "opt": opt.state_dict(), "epoch": ep, "res": res}
+              "opts": [o.state_dict() for o in opts], "epoch": ep, "res": res}
         torch.save(ck, a.out / "last.pt")
         if score > best:
             best = score

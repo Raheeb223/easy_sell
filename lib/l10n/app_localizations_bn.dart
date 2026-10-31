@@ -733,6 +733,9 @@ class AppLocalizationsBn extends AppLocalizations {
   String get scan_notIdentified => 'শনাক্ত করা যায়নি';
 
   @override
+  String get scan_addAsNew => 'নতুন পণ্য হিসেবে যোগ করুন';
+
+  @override
   String get scan_topSellers => 'সেরা বিক্রি';
 
   @override
@@ -1213,6 +1216,10 @@ class AppLocalizationsBn extends AppLocalizations {
 
   @override
   String get voice_errNoMatch => 'আপনার বলা কিছুই মেলাতে পারিনি।';
+
+  @override
+  String get voice_errNoProducts =>
+      'আগে আপনার পণ্যগুলো যোগ করুন। ভয়েস আপনার পণ্যের তালিকা থেকে বিক্রি করে।';
 
   @override
   String get voice_errMicDenied =>

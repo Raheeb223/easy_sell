@@ -66,6 +66,11 @@ dependencies:
   google_mlkit_text_recognition: 0.17.1
   image: 4.5.4
   speech_to_text: 7.5.0
+  # Offline Bangla speech recognition (Apache-2.0); model in
+  # assets/models/asr_bn (ml/asr/quantize_bn.py).
+  sherpa_onnx: 2.0.1
+  # 16 kHz PCM microphone stream for it.
+  record: 7.1.2
 
 dev_dependencies:
   flutter_test:
@@ -114,6 +119,8 @@ flutter:
     - assets/fonts/
     # EasySell Vision, the on-device product fingerprint model (ml/README.md).
     - assets/models/
+    # Offline Bangla speech model (Apache-2.0, ml/asr/quantize_bn.py).
+    - assets/models/asr_bn/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

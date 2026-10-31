@@ -338,7 +338,9 @@ class VoiceController extends Notifier<VoiceSaleState> {
           phase: lines.isEmpty ? VoicePhase.error : VoicePhase.reviewing,
           heardText: parsed.heardText ?? fallbackHeardText,
           lines: lines,
-          errorMessage: lines.isEmpty ? 'noMatch' : null,
+          errorMessage: lines.isEmpty
+              ? (_products.isEmpty ? 'noProducts' : 'noMatch')
+              : null,
           background: wasBackgrounded,
           canRetryAudio: false,
         );

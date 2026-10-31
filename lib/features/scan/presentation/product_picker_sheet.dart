@@ -5,26 +5,40 @@ import '../../inventory/domain/product.dart';
 
 /// Bottom sheet listing [products] with a name search; returns the chosen
 /// product, or null if dismissed. Reused for the match chooser and manual pick.
+/// With [onAddNew], it also offers "Add as new product" (the sheet closes
+/// first, then [onAddNew] runs).
 Future<Product?> showProductPickerSheet(
   BuildContext context, {
   required List<Product> products,
   required String title,
   String? readLabel,
+  VoidCallback? onAddNew,
 }) {
   return showModalBottomSheet<Product>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (_) => _ProductPickerSheet(products: products, title: title, readLabel: readLabel),
+    builder: (_) => _ProductPickerSheet(
+      products: products,
+      title: title,
+      readLabel: readLabel,
+      onAddNew: onAddNew,
+    ),
   );
 }
 
 class _ProductPickerSheet extends StatefulWidget {
-  const _ProductPickerSheet({required this.products, required this.title, this.readLabel});
+  const _ProductPickerSheet({
+    required this.products,
+    required this.title,
+    this.readLabel,
+    this.onAddNew,
+  });
 
   final List<Product> products;
   final String title;
   final String? readLabel;
+  final VoidCallback? onAddNew;
 
   @override
   State<_ProductPickerSheet> createState() => _ProductPickerSheetState();
@@ -67,6 +81,17 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
                 color: theme.colorScheme.onSurfaceVariant,
                 fontStyle: FontStyle.italic,
               ),
+            ),
+          ],
+          if (widget.onAddNew case final VoidCallback addNew) ...[
+            const SizedBox(height: 12),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                Navigator.of(context).pop();
+                addNew();
+              },
+              icon: const Icon(Icons.add),
+              label: Text(context.l10n.scan_addAsNew),
             ),
           ],
           const SizedBox(height: 12),

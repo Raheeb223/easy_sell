@@ -8,6 +8,7 @@ import '../../../core/l10n/l10n_ext.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../inventory/domain/product.dart';
 import '../../inventory/presentation/inventory_controller.dart';
+import '../../inventory/presentation/product_form_screen.dart';
 import '../data/scan_camera.dart';
 import '../data/vision_scan_repository.dart';
 import '../domain/scan_item.dart';
@@ -148,9 +149,24 @@ class _ScanSessionScreenState extends ConsumerState<ScanSessionScreen>
       products: all,
       title: context.l10n.scan_didYouMean,
       readLabel: item.readLabel,
+      onAddNew: () => _addNew(item),
     );
     if (picked != null) {
       ref.read(scanSessionProvider.notifier).choose(item.id, picked);
+    }
+  }
+
+  /// The scanned item is not in the shop yet: create it (name prefilled from
+  /// the label) and settle the chip on it, which also teaches the model this
+  /// photo -- the next scan of it is recognised.
+  Future<void> _addNew(ScanItem item) async {
+    final created = await Navigator.of(context).push<Product>(
+      MaterialPageRoute(
+        builder: (_) => ProductFormScreen(initialName: item.readLabel),
+      ),
+    );
+    if (created != null && mounted) {
+      ref.read(scanSessionProvider.notifier).choose(item.id, created);
     }
   }
 

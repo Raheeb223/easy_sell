@@ -700,6 +700,7 @@ class _ErrorPane extends StatelessWidget {
     'micDenied' => l10n.voice_errMicDenied,
     'noSpeech' => l10n.voice_errNoSpeech,
     'noMatch' => l10n.voice_errNoMatch,
+    'noProducts' => l10n.voice_errNoProducts,
     'tooQuiet' => l10n.voice_errTooQuiet,
     final other? => other,
     // Unreachable in practice -- every real transition to `error` sets a

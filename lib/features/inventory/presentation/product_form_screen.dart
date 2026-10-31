@@ -21,9 +21,13 @@ import 'product_form_controller.dart';
 /// (held in [productFormUnitProvider]) decides whether brand/variant show, the
 /// stock unit, decimal vs. whole quantities, and the per-unit price labels.
 class ProductFormScreen extends ConsumerStatefulWidget {
-  const ProductFormScreen({super.key, this.product});
+  const ProductFormScreen({super.key, this.product, this.initialName});
 
   final Product? product;
+
+  /// Prefills a new product's name (e.g. the label a scan read). The screen
+  /// pops with the saved product.
+  final String? initialName;
 
   bool get isNew => product == null;
 
@@ -55,7 +59,7 @@ class _ProductFormScreenState extends ConsumerState<ProductFormScreen> {
     super.initState();
     final p = widget.product;
     _categoryId = p?.categoryId;
-    _name = TextEditingController(text: p?.name ?? '');
+    _name = TextEditingController(text: p?.name ?? widget.initialName ?? '');
     _brand = TextEditingController(text: p?.brand ?? '');
     _variant = TextEditingController(text: p?.variant ?? '');
     _quantity = TextEditingController(
@@ -138,9 +142,15 @@ class _ProductFormScreenState extends ConsumerState<ProductFormScreen> {
           : int.parse(_warnDays.text.trim()),
     );
 
+    Product? saved;
     final outcome = await ref
         .read(inventoryControllerProvider.notifier)
-        .save(draft, isNew: widget.isNew, expiryDate: _expiryDate);
+        .save(
+          draft,
+          isNew: widget.isNew,
+          expiryDate: _expiryDate,
+          onSaved: (p) => saved = p,
+        );
 
     if (!mounted || outcome == ProductSaveOutcome.failed) return;
     if (outcome == ProductSaveOutcome.savedWithoutExpiry) {
@@ -148,7 +158,7 @@ class _ProductFormScreenState extends ConsumerState<ProductFormScreen> {
         SnackBar(content: Text(context.l10n.expiry_savedWithoutDate)),
       );
     }
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(saved);
   }
 
   // --- validation ------------------------------------------------------------

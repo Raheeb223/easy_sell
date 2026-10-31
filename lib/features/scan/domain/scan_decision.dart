@@ -3,13 +3,14 @@ import 'recognition_result.dart';
 /// What the UI should do after a recognition result comes back.
 enum ScanAction { autoSell, chooseFromMatches, noMatch }
 
-/// Tunable thresholds mapping model confidences to a UI action. Calibrate on
-/// real photos once a provider is chosen (spec §6).
+/// Tunable thresholds mapping model confidences to a UI action, calibrated
+/// with ml/calibrate_fusion.py: at 0.20 the chooser holds the right product
+/// for ~27% more scans than at 0.50 (one tap instead of a search).
 class ScanThresholds {
   const ScanThresholds({
     this.strong = 0.80,
     this.margin = 0.15,
-    this.ambiguous = 0.50,
+    this.ambiguous = 0.20,
     this.maxChoices = 5,
   });
 

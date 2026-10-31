@@ -21,12 +21,13 @@ Future<void> main() async {
   // (icon contrast) is set in App's builder so it tracks light/dark.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
-  // Credits the EasySell Vision model's training data and teacher require
-  // (shown on Settings -> About & licenses).
+  // Credits the EasySell Vision model's training data and teacher, and the
+  // bundled Bangla speech model, require (Settings -> About & licenses).
   LicenseRegistry.addLicense(
-    () => Stream.value(
-      const LicenseEntryWithLineBreaks(['EasySell Vision'], _visionCredits),
-    ),
+    () => Stream.fromIterable(const [
+      LicenseEntryWithLineBreaks(['EasySell Vision'], _visionCredits),
+      LicenseEntryWithLineBreaks(['Bangla speech model'], _speechCredits),
+    ]),
   );
 
   // The shop's whole database lives on this phone (phone-only design).
@@ -77,3 +78,17 @@ Grocery Store Dataset, M. Klasson, C. Zhang, H. Kjellstrom (2019), MIT License.
 
 Teacher model: SigLIP (Google), Apache License 2.0.
 Student backbone: MobileNetV3 weights from timm (Ross Wightman), Apache License 2.0.''';
+
+const _speechCredits = '''
+Offline Bangla speech recognition uses the streaming Zipformer model
+vosk-model-small-streaming-bn by Alpha Cephei Inc.
+(https://huggingface.co/alphacep/vosk-model-small-streaming-bn),
+Apache License 2.0, run with sherpa-onnx (k2-fsa), Apache License 2.0.
+Modified: weights quantised to 8-bit for the app.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at http://www.apache.org/licenses/LICENSE-2.0. Unless required by
+applicable law or agreed to in writing, software distributed under the
+License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
+OF ANY KIND, either express or implied.''';

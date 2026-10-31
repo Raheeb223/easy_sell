@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+
+import 'offline_bangla_capture.dart';
 
 /// What one listening session heard: the best transcript and the
 /// recogniser's other guesses (the parser picks whichever matches the shop's
@@ -66,6 +69,11 @@ class DeviceSpeechCapture implements SpeechCapture {
   static const listenFor = Duration(seconds: 20);
   static const pauseFor = Duration(seconds: 2);
 
+  /// The plugin's pause clock only restarts when words arrive, not on sound.
+  /// Online recognition (Bangla on Pixel: no offline pack) sends words late,
+  /// so 2 s cut shopkeepers off mid-sentence.
+  static const pauseForOnline = Duration(seconds: 3);
+
   /// Asked-for locale -> the recogniser's spelling. Listing the locales is a
   /// slow round trip on Android, so it happens once.
   final _locales = <String, String>{};
@@ -102,11 +110,17 @@ class DeviceSpeechCapture implements SpeechCapture {
     _localeId = await _bestLocale(localeId);
     _hints = hints.take(100).toList();
     _fellBack = false;
-    await _listen(onDevice: true);
+    await _listen(onDevice: !_noOnDevice.contains(_localeId));
   }
+
+  /// Locales the phone cannot recognise offline (Pixel has no offline Bangla:
+  /// error_language_not_supported). Later sessions go straight online instead
+  /// of failing first.
+  final _noOnDevice = <String?>{};
 
   Future<void> _listen({required bool onDevice}) async {
     _triedOnDevice = onDevice;
+    debugPrint('voice: listen $_localeId onDevice=$onDevice');
     await _stt.listen(
       onResult: _onResult,
       onSoundLevelChange: (level) {
@@ -115,11 +129,13 @@ class DeviceSpeechCapture implements SpeechCapture {
       },
       listenOptions: SpeechListenOptions(
         listenFor: listenFor,
-        pauseFor: pauseFor,
+        pauseFor: onDevice ? pauseFor : pauseForOnline,
         localeId: _localeId,
         partialResults: true,
         onDevice: onDevice,
-        cancelOnError: true,
+        // _onError cancels itself: the plugin's own cancel-on-error runs
+        // after our handler and would kill the fallback session it started.
+        cancelOnError: false,
         listenMode: ListenMode.dictation,
         contextualPhrases: _hints,
       ),
@@ -165,22 +181,35 @@ class DeviceSpeechCapture implements SpeechCapture {
   }
 
   void _onError(SpeechRecognitionError e) {
+    debugPrint('voice: error ${e.errorMsg} heard=${_last != null}');
     // The offline language pack is missing: try the phone's standard
     // recogniser once rather than fail the sale.
     final languageMissing =
         e.errorMsg.contains('language') || e.errorMsg.contains('server');
     if (_triedOnDevice && !_fellBack && languageMissing && _last == null) {
       _fellBack = true;
-      unawaited(_listen(onDevice: false));
+      if (e.errorMsg.contains('not_supported')) _noOnDevice.add(_localeId);
+      unawaited(_fallBack());
       return;
     }
+    unawaited(_stt.cancel());
     _finish();
+  }
+
+  Future<void> _fallBack() async {
+    try {
+      await _stt.cancel();
+      await _listen(onDevice: false);
+    } catch (_) {
+      _finish();
+    }
   }
 
   void _finish() {
     final c = _done;
     if (c == null || c.isCompleted) return;
     final r = _last;
+    debugPrint('voice: done, ${r?.recognizedWords.length ?? 0} chars');
     c.complete(
       r == null
           ? const Heard('')
@@ -220,5 +249,5 @@ class DeviceSpeechCapture implements SpeechCapture {
 }
 
 final speechCaptureProvider = Provider<SpeechCapture>(
-  (ref) => DeviceSpeechCapture(),
+  (ref) => HybridSpeechCapture(OfflineBanglaCapture(), DeviceSpeechCapture()),
 );

@@ -29,7 +29,7 @@ void main() {
     });
 
     test('all below ambiguous -> noMatch', () {
-      final d = decideScanAction(_result([('a', 0.30)]));
+      final d = decideScanAction(_result([('a', 0.15)]));
       expect(d.action, ScanAction.noMatch);
       expect(d.matches, isEmpty);
     });

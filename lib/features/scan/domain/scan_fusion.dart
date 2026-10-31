@@ -10,16 +10,18 @@ import 'recognition_result.dart';
 /// 0.50 to ask). The photo identifies the product family and Bangla-only or
 /// loose items; the text separates sizes the photo mixes up.
 ///
-/// [photoThreshold] is the cosine similarity at which a photo match is as
-/// likely right as wrong for a 200-product shop; it is calibrated from the
-/// few-shot test in `ml/` (see `ml/README.md`) and shipped with the model.
+/// [photoWeight] and [photoThreshold] are calibrated with
+/// `ml/calibrate_fusion.py` (200-product shops, 3 taught photos each). With
+/// the v2 model and no usable label text, RP2K shelf photos auto-sell the
+/// right product 43% of the time (1.1% wrong) and put it in the chooser
+/// another 28%; grocery photos 63% (0.5% wrong) + 27%.
 class FusionParams {
   const FusionParams({
     this.photoWeight = 24,
     this.photoThreshold = 0.55,
     this.textWeight = 9,
     this.textThreshold = 0.55,
-    this.untaughtSimilarity = 0.25,
+    this.untaughtSimilarity = 0.45,
   });
 
   final double photoWeight;
@@ -27,8 +29,9 @@ class FusionParams {
   final double textWeight;
   final double textThreshold;
 
-  /// What an untaught product counts as on the photo side: well below a
-  /// match, so it wins only on its label text.
+  /// What a product without taught photos counts as on the photo side, when
+  /// its name matches the label: a perfect text match still makes it the
+  /// likely answer. Untaught products the label does not name are left out.
   final double untaughtSimilarity;
 }
 
@@ -49,14 +52,22 @@ RecognitionResult fuseScan({
 }) {
   final logits = <String, double>{};
   final usePhoto = photoAvailable && photo.isNotEmpty;
+  // Label text only counts when it named some product. ML Kit reads Latin
+  // script only, so a Bangla label (or a photo with no text) reads as nothing
+  // matching -- that must not count against every product.
+  final useText = text.values.any((t) => t >= params.textThreshold);
   for (final id in productIds) {
+    final t = text[id] ?? 0;
+    final taught = photo.containsKey(id);
+    // No evidence for it at all: leave it out rather than let hundreds of
+    // untaught products dilute the real match's confidence.
+    if (!(usePhoto && taught) && !(useText && t >= params.textThreshold)) continue;
     var l = 0.0;
     if (usePhoto) {
       final s = photo[id] ?? params.untaughtSimilarity;
       l += params.photoWeight * (s - params.photoThreshold);
     }
-    final t = text[id] ?? 0;
-    l += params.textWeight * (t - params.textThreshold);
+    if (useText) l += params.textWeight * (t - params.textThreshold);
     logits[id] = l;
   }
   if (logits.isEmpty) {

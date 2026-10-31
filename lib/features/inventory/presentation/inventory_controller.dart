@@ -52,11 +52,13 @@ class InventoryController extends AsyncNotifier<void> {
   /// delivery. That is a second insert after the product's, so it can fail on
   /// its own: the product then stays saved and the outcome says the date
   /// wasn't (expiry spec §3.3), so the form can tell the shopkeeper to add it
-  /// from the product page.
+  /// from the product page. [onSaved] receives the stored product (with its
+  /// new id), e.g. so a scan can teach its photo to it.
   Future<ProductSaveOutcome> save(
     Product draft, {
     required bool isNew,
     DateTime? expiryDate,
+    void Function(Product saved)? onSaved,
   }) async {
     final shopId = _shopId;
     if (shopId == null) {
@@ -77,6 +79,7 @@ class InventoryController extends AsyncNotifier<void> {
         state = AsyncError(failure, StackTrace.current);
         return ProductSaveOutcome.failed;
       case Success(value: final saved):
+        onSaved?.call(saved);
         var outcome = ProductSaveOutcome.saved;
         if (isNew && expiryDate != null && saved.quantity > 0) {
           final batch = await ref

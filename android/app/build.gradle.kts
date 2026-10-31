@@ -54,6 +54,21 @@ android {
         release {
             signingConfig = signingConfigs.findByName("release")
                 ?: signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // EasySell Vision runs on the CPU (XNNPACK); the TFLite GPU
+            // delegate is never loaded, so don't ship it.
+            excludes += "**/libtensorflowlite_gpu_jni.so"
+            // Compress the native code in the APK (speech engine, Flutter,
+            // the app): about 25 MB smaller to download and share, which
+            // matters more to shops than the space Android uses to unpack it.
+            useLegacyPackaging = true
         }
     }
 }

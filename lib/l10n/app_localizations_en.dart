@@ -738,6 +738,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get scan_notIdentified => 'Not identified';
 
   @override
+  String get scan_addAsNew => 'Add as new product';
+
+  @override
   String get scan_topSellers => 'Top sellers';
 
   @override
@@ -1219,6 +1222,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get voice_errNoMatch => 'Couldn\'t match anything you said.';
+
+  @override
+  String get voice_errNoProducts =>
+      'Add your products first. Voice sells from your product list.';
 
   @override
   String get voice_errMicDenied =>
