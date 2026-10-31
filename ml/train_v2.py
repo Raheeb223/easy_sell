@@ -53,11 +53,14 @@ def gpu_batches(dl, dev):
                     ev = torch.cuda.Event()
                     ev.record(stream)
                 q.put((xb, yb, gi, ev))
-        finally:
             q.put(None)
+        except BaseException as e:  # surfaced in the training loop, not swallowed
+            q.put(e)
 
     threading.Thread(target=work, daemon=True).start()
     while (item := q.get()) is not None:
+        if isinstance(item, BaseException):
+            raise RuntimeError("data loading failed") from item
         xb, yb, gi, ev = item
         torch.cuda.current_stream().wait_event(ev)
         xb.record_stream(torch.cuda.current_stream())

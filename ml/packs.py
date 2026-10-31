@@ -65,7 +65,15 @@ class PackStream(IterableDataset):
     def __iter__(self):
         info = get_worker_info()
         wid, nw = (info.id, info.num_workers) if info else (0, 1)
-        blocks = [self.entries[i:i + self.block] for i in range(0, len(self.entries), self.block)]
+        # A block is read as one span of one file, so it never crosses packs.
+        blocks, run = [], []
+        for e in self.entries:
+            if run and (e[0] != run[0][0] or len(run) == self.block):
+                blocks.append(run)
+                run = []
+            run.append(e)
+        if run:
+            blocks.append(run)
         rng = random.Random(self.seed + self.epoch)
         rng.shuffle(blocks)
         blocks = blocks[wid::nw]
@@ -76,8 +84,6 @@ class PackStream(IterableDataset):
             f = files.get(path) or files.setdefault(path, open(path, "rb"))
             start = blk[0][1]
             end = blk[-1][1] + blk[-1][2]
-            # Entries in a block are contiguous only within one pack, which
-            # is how blocks are built.
             f.seek(start)
             raw = f.read(end - start)
             for (_, off, ln, y, gi) in blk:
