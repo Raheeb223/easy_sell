@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'bangla_translit.dart';
+import 'bilingual_lexicon.dart';
 import 'grocery_lexicon.dart';
 
 /// Finds which of the shop's products a piece of text means -- the words read
@@ -14,6 +15,8 @@ import 'grocery_lexicon.dart';
 ///     this is what tells Pepsi 1L from Pepsi 500ml;
 ///   * Bangla speech for Latin names (`পেপসি` -> `pepsi`) and the reverse:
 ///     both sides compared in a phonetic Latin key;
+///   * the same thing named in the other language (`পদার্থবিজ্ঞান` on a
+///     cover, `Physics` in the shop): a Bangla-English dictionary;
 ///   * common words (`rice`, `oil`) count less than rare ones (`teer`), so a
 ///     brand name decides more than a category word.
 class ProductMatcher {
@@ -54,7 +57,12 @@ class ProductMatcher {
     // How much of the product's name the text contains (rare words weigh more).
     var got = 0.0, total = 0.0;
     for (final tok in t.tokens) {
-      final w = (_idf[tok.key] ?? 1.0) * math.min(1.0, tok.key.length / 4);
+      // A category word (`soap`, `oil`) is what people leave out -- they say
+      // `Lifebuoy` for Lifebuoy Soap -- so it counts half of a name word.
+      final generic = tok.key.startsWith('#') && t.tokens.length > 1;
+      final w = (_idf[tok.key] ?? 1.0) *
+          math.min(1.0, tok.key.length / 4) *
+          (generic ? 0.5 : 1.0);
       total += w;
       got += w * q.best(tok);
     }
@@ -63,10 +71,10 @@ class ProductMatcher {
     if (mode == MatchMode.phrase && q.tokens.isNotEmpty) {
       // A spoken phrase is short: its words should all be explained too.
       var qGot = 0.0;
-      for (final qt in q.tokens) {
+      for (var i = 0; i < q.tokens.length; i++) {
         var best = 0.0;
         for (final tok in t.tokens) {
-          best = math.max(best, tokenSimilarity(qt, tok));
+          best = math.max(best, q.wordBest(i, tok));
         }
         qGot += best;
       }
@@ -122,11 +130,18 @@ class MatchTarget {
 
 /// A word in both spellings: as written, and as a comparable key -- its
 /// grocery concept when it has one (`চিনি`, `chini`, `sugar` -> `#sugar`),
-/// else its phonetic Latin key.
+/// else its phonetic Latin key. [meanings] are its English meanings
+/// (`পদার্থবিজ্ঞান` -> physics; an English word means itself), so words of
+/// two languages that mean the same thing meet.
 class Token {
-  Token(this.raw) : key = groceryConcepts[raw] ?? phoneticKey(raw);
+  Token(this.raw)
+      : key = groceryConcepts[raw] ?? phoneticKey(raw),
+        meanings = groceryConcepts.containsKey(raw)
+            ? const {}
+            : meaningsOf(raw);
   final String raw;
   final String key;
+  final Set<String> meanings;
 
   @override
   bool operator ==(Object other) => other is Token && other.key == key;
@@ -154,10 +169,19 @@ class Size {
 
 /// Text split into comparable words and sizes.
 class QueryText {
-  QueryText(this.tokens, this.sizes);
+  QueryText(this.tokens, this.sizes)
+      : pairs = [
+          for (var i = 0; i + 1 < tokens.length; i++)
+            Token(tokens[i].raw + tokens[i + 1].raw),
+        ];
 
   final List<Token> tokens;
   final Set<Size> sizes;
+
+  /// Each word joined with the next: a name is often heard or read as two
+  /// words (`লাইফ বয়` for Lifebuoy, `পদার্থ বিজ্ঞান` for পদার্থবিজ্ঞান).
+  /// `pairs[i]` joins `tokens[i]` and `tokens[i + 1]`.
+  final List<Token> pairs;
 
   static final _sizeRe = RegExp(
     r'(\d+(?:[.,]\d+)?)\s*(ml|mls|millilitre|milliliter|ltr|litre|liter|lit|lt|l|kg|kgs|kilo|gm|gms|gram|grams|gr|g|pcs|pc|piece|pieces)\b',
@@ -203,10 +227,11 @@ class QueryText {
     };
   }
 
-  /// How well some word of this text matches [t] (0..1).
+  /// How well some word of this text, or two neighbours read as one,
+  /// matches [t] (0..1).
   double best(Token t) {
     var b = 0.0;
-    for (final q in tokens) {
+    for (final q in [...tokens, ...pairs]) {
       final s = tokenSimilarity(q, t);
       if (s > b) {
         b = s;
@@ -215,19 +240,77 @@ class QueryText {
     }
     return b;
   }
+
+  /// How well word [i] matches [t], alone or joined with a neighbour.
+  double wordBest(int i, Token t) {
+    var b = tokenSimilarity(tokens[i], t);
+    if (i > 0) b = math.max(b, tokenSimilarity(pairs[i - 1], t));
+    if (i < pairs.length) b = math.max(b, tokenSimilarity(pairs[i], t));
+    return b;
+  }
 }
 
 /// Similarity of two words: exact, prefix (an abbreviation like `cola` in
 /// `colas`), or trigram overlap of their phonetic keys (typos, Bangla).
 double tokenSimilarity(Token a, Token b) {
   if (a.key == b.key || a.raw == b.raw) return 1;
+  if (a.meanings.isNotEmpty && b.meanings.any(a.meanings.contains)) return 1;
   final x = a.key, y = b.key;
   if (x.length >= 3 && y.length >= 3 && (x.startsWith(y) || y.startsWith(x))) {
     final ratio = math.min(x.length, y.length) / math.max(x.length, y.length);
     return 0.7 + 0.25 * ratio;
   }
   final t = trigramSimilarity(x, y);
+  // Same consonants in the same order: how a brand sounds when its spelling
+  // does not (`lifebuoy` / `লাইফবয়`, both l-f-b).
+  final sx = consonants(x);
+  if (sx.length >= 3 && sx == consonants(y)) return math.max(t, 0.85);
   return t < 0.3 ? 0 : t;
+}
+
+/// A phonetic key's consonants: its first letter, then the rest without
+/// the folded vowels.
+String consonants(String key) =>
+    key.isEmpty ? key : key[0] + key.substring(1).replaceAll('a', '');
+
+/// [banglaMeanings] keyed in the form [normalizeNukta] gives every word.
+final Map<String, List<String>> _banglaMeanings = {
+  for (final e in banglaMeanings.entries) normalizeNukta(e.key): e.value,
+};
+
+/// English words some Bangla word means: an English word is matched by
+/// meaning only when the dictionary knows it.
+final Set<String> _englishMeanings = {
+  for (final m in banglaMeanings.values) ...m,
+};
+
+/// Bangla case and article endings, longest first: `বইয়ের` is `বই`.
+const _banglaEndings = [
+  'গুলোর', 'গুলো', 'গুলি', 'দের', 'য়ের', 'য়ের', 'টির', 'টার', 'ের', 'টি', 'টা',
+  'তে', 'কে', 'র', 'ে',
+];
+
+/// What [word] means in English, for matching across languages.
+Set<String> meaningsOf(String word) {
+  if (isBangla(word)) {
+    if (_banglaMeanings[word] case final List<String> m) return {...m};
+    for (final e in _banglaEndings) {
+      if (word.length > e.length + 1 && word.endsWith(e)) {
+        final m = _banglaMeanings[word.substring(0, word.length - e.length)];
+        if (m != null) return {...m};
+      }
+    }
+    return const {};
+  }
+  if (_englishMeanings.contains(word)) return {word};
+  // Plurals: `books`, `boxes`.
+  for (final cut in ['es', 's']) {
+    if (word.length > cut.length + 2 && word.endsWith(cut)) {
+      final w = word.substring(0, word.length - cut.length);
+      if (_englishMeanings.contains(w)) return {w};
+    }
+  }
+  return const {};
 }
 
 /// Dice coefficient over character trigrams of the padded words.

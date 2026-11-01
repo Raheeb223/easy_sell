@@ -21,12 +21,14 @@ Future<void> main() async {
   // (icon contrast) is set in App's builder so it tracks light/dark.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
-  // Credits the EasySell Vision model's training data and teacher, and the
-  // bundled Bangla speech model, require (Settings -> About & licenses).
+  // Credits the EasySell Vision model's training data and teacher, the
+  // bundled Bangla speech model and the Bangla-English dictionary require
+  // (Settings -> About & licenses).
   LicenseRegistry.addLicense(
     () => Stream.fromIterable(const [
       LicenseEntryWithLineBreaks(['EasySell Vision'], _visionCredits),
       LicenseEntryWithLineBreaks(['Bangla speech model'], _speechCredits),
+      LicenseEntryWithLineBreaks(['Bangla-English dictionary'], _dictionaryCredits),
     ]),
   );
 
@@ -98,3 +100,14 @@ the License at http://www.apache.org/licenses/LICENSE-2.0. Unless required by
 applicable law or agreed to in writing, software distributed under the
 License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
 OF ANY KIND, either express or implied.''';
+
+const _dictionaryCredits = '''
+Product names are matched across Bangla and English (a cover reading
+পদার্থবিজ্ঞান finds a book saved as Physics) with word meanings from English
+Wiktionary's Bengali entries (https://en.wiktionary.org), by Wiktionary
+contributors, as extracted by wiktextract (Tatu Ylonen,
+https://kaikki.org/dictionary/Bengali/). Licensed under the Creative Commons
+Attribution-ShareAlike 4.0 License
+(https://creativecommons.org/licenses/by-sa/4.0/). Modified: reduced to
+single-word English meanings (lib/core/matching/bilingual_lexicon.dart,
+built by ml/build_lexicon.py).''';

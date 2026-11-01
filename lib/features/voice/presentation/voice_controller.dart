@@ -1,7 +1,7 @@
 import 'dart:async' show StreamSubscription, Timer, unawaited;
 
 import 'package:clock/clock.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -356,9 +356,9 @@ class VoiceController extends Notifier<VoiceSaleState> {
     if (wasBackgrounded) ref.read(voiceHapticsProvider).resultReady();
   }
 
-  /// Debug-only: what the parser was sure of, to tune [VoiceThresholds].
+  /// What the parser was sure of, to tune [VoiceThresholds] on a real
+  /// phone (logcat only).
   void _logCalibration(VoiceParseResult parsed, List<VoiceLine> lines) {
-    if (!kDebugMode) return;
     for (var i = 0; i < parsed.items.length && i < lines.length; i++) {
       final ranked = [...parsed.items[i].matches]
         ..sort((a, b) => b.confidence.compareTo(a.confidence));
