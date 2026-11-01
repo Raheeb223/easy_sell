@@ -203,14 +203,23 @@ def main():
             x, fl, ys, ul = collate(b, dev, augment=True)
             for g in opt.param_groups:
                 g["lr"] = lr_at(step)
-            loss = model.loss(x, fl, ys, ul)
-            if not torch.isfinite(loss):
-                print(f"step {step}: non-finite loss, batch skipped", flush=True)
-                opt.zero_grad(set_to_none=True)
-                continue
             opt.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            try:
+                loss = model.loss(x, fl, ys, ul)
+                if not torch.isfinite(loss):
+                    print(f"step {step}: non-finite loss, batch skipped", flush=True)
+                    continue
+                loss.backward()
+            except torch.cuda.OutOfMemoryError:
+                loss = None
+                opt.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                print(f"step {step}: out of GPU memory ({int(fl.sum())} frames), batch skipped", flush=True)
+                continue
+            # A bad gradient must not reach Adam: one NaN poisons every weight.
+            if not torch.isfinite(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)):
+                print(f"step {step}: non-finite gradient, batch skipped", flush=True)
+                continue
             opt.step()
             step += 1
             if step % 50 == 0:

@@ -17,6 +17,10 @@ SILENCE = float(np.log(np.finfo(np.float32).eps))  # fbank of digital silence
 BLANK = 0
 
 
+def _safe_exp(x):
+    return torch.exp(x.clamp(max=80.0))
+
+
 def _load(path: Path):
     """onnx2torch module whose weights (the graph's float initializers) are
     parameters, plus parameter -> initializer name for writing back."""
@@ -31,6 +35,12 @@ def _load(path: Path):
             m.graph.initializer.append(t)
             m.graph.node.remove(n)
     module = convert(m)
+    # The activations compute log(1 + exp(x)) and pick x itself where x is
+    # large; exp overflows there, which the forward pass discards but turns
+    # the gradient into NaN. Capping exp's input changes no output.
+    for sub in module.modules():
+        if getattr(sub, "function", None) is torch.exp:
+            sub.function = _safe_exp
     by_value = {}
     for init in m.graph.initializer:
         a = numpy_helper.to_array(init)
