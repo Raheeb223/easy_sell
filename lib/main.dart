@@ -84,7 +84,13 @@ Offline Bangla speech recognition uses the streaming Zipformer model
 vosk-model-small-streaming-bn by Alpha Cephei Inc.
 (https://huggingface.co/alphacep/vosk-model-small-streaming-bn),
 Apache License 2.0, run with sherpa-onnx (k2-fsa), Apache License 2.0.
-Modified: weights quantised to 8-bit for the app.
+Modified: fine-tuned for EasySell with shop-noise augmentation on
+  - Large Bengali ASR training data (OpenSLR 53) and Crowdsourced
+    high-quality Bengali multi-speaker speech (OpenSLR 37), Google,
+    CC BY-SA 4.0 (https://openslr.org/53, https://openslr.org/37);
+  - FLEURS Bengali, Google, CC BY 4.0
+    (https://huggingface.co/datasets/google/fleurs);
+and the weights quantised to 8-bit for the app.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not
 use this file except in compliance with the License. You may obtain a copy of
