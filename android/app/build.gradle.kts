@@ -85,4 +85,8 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Bangla label reading: ML Kit's "Devanagari" text engine also carries
+    // its Bengali-script line recogniser (and picks the script per line).
+    // Bundled (~2 MB) so it works offline from the first scan.
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
 }

@@ -7,6 +7,7 @@ import '../../cart/presentation/cart_controller.dart';
 import '../../inventory/domain/product.dart';
 import '../../inventory/presentation/inventory_controller.dart';
 import '../data/scan_camera.dart';
+import '../data/vision_embedder.dart';
 import '../data/vision_scan_repository.dart';
 import '../domain/scan_decision.dart';
 import '../domain/scan_item.dart';
@@ -27,9 +28,9 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
 
   final _frames = <String, Uint8List>{};
 
-  /// What each chip's photo showed (fingerprint, barcode), kept until the
-  /// chip is confirmed so the model can learn from it (design §5a.4).
-  final _lessons = <String, ScanRecognition>{};
+  /// Each chip's photo fingerprint, kept until the chip is confirmed so the
+  /// model can learn from it (design §5a.4).
+  final _fingerprints = <String, Embedding>{};
   final _queue = <String>[];
   int _active = 0;
   int _seq = 0;
@@ -117,7 +118,7 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
         result.when(
           success: (scan) {
             final recognition = scan.result;
-            _lessons[id] = scan;
+            if (scan.embedding case final Embedding e) _fingerprints[id] = e;
             final byId = {for (final p in products) p.id: p};
             final decision = decideScanAction(recognition);
             final matched = <Product>[
@@ -233,10 +234,10 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
   }
 
   void _learn(String itemId, String productId) {
-    final scan = _lessons.remove(itemId);
-    if (scan == null) return;
+    final fp = _fingerprints.remove(itemId);
+    if (fp == null) return;
     // Fire and forget: a failed save only costs this one lesson.
-    ref.read(visionScanRepositoryProvider).learn(productId, scan).ignore();
+    ref.read(visionScanRepositoryProvider).learn(productId, fp).ignore();
   }
 
   void setQuantity(String itemId, double quantity) {
@@ -250,7 +251,7 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
 
   void remove(String itemId) {
     _frames.remove(itemId);
-    _lessons.remove(itemId);
+    _fingerprints.remove(itemId);
     _queue.remove(itemId);
     state = state.where((i) => i.id != itemId).toList();
   }
@@ -268,14 +269,14 @@ class ScanSessionController extends Notifier<List<ScanItem>> {
     }
     state = const <ScanItem>[];
     _frames.clear();
-    _lessons.clear();
+    _fingerprints.clear();
     _queue.clear();
   }
 
   void clear() {
     state = const <ScanItem>[];
     _frames.clear();
-    _lessons.clear();
+    _fingerprints.clear();
     _queue.clear();
   }
 

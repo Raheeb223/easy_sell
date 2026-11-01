@@ -7,23 +7,14 @@
 library;
 
 /// Bump when [migrations] gains an entry.
-const schemaVersion = 2;
+const schemaVersion = 3;
 
 /// Statements run on top of [schemaStatements] when upgrading TO a version.
 const migrations = <int, List<String>>{
-  2: [_productBarcodes, _productBarcodesIndex],
+  // Version 2 (one test build) added a barcode table; the app identifies
+  // products by their label and photo instead, so 3 drops it again.
+  3: ['DROP TABLE IF EXISTS product_barcodes'],
 };
-
-// Barcodes printed on packs, learned from confirmed scans. One product per
-// code; a product can have several (pack sizes, reprints).
-const _productBarcodes = '''
-  CREATE TABLE product_barcodes (
-    barcode     TEXT PRIMARY KEY,
-    product_id  TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    created_at  INTEGER NOT NULL
-  )''';
-const _productBarcodesIndex =
-    'CREATE INDEX idx_product_barcodes_product ON product_barcodes (product_id)';
 
 const schemaStatements = <String>[
   '''
@@ -170,8 +161,6 @@ const schemaStatements = <String>[
     UNIQUE (product_id, phrase_normalized)
   )''',
   'CREATE INDEX idx_product_aliases_phrase ON product_aliases (phrase_normalized)',
-  _productBarcodes,
-  _productBarcodesIndex,
 ];
 
 /// Starter categories for a new shop (0003 `seed_default_categories`).

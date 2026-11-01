@@ -7,32 +7,28 @@ import '../../../core/matching/product_matcher.dart';
 import '../../inventory/domain/product.dart';
 import '../domain/recognition_result.dart';
 import '../domain/scan_fusion.dart';
-import 'barcode_store.dart';
 import 'embedding_store.dart';
 import 'label_reader.dart';
 import 'vision_embedder.dart';
 
-/// A recognition plus what the photo showed, so a confirmed scan can teach
-/// the model the photo (design §5a.4) and the pack's barcode.
+/// A recognition plus the photo's fingerprint, so a confirmed scan can teach
+/// the model (design §5a.4).
 class ScanRecognition {
-  const ScanRecognition(this.result, this.embedding, {this.barcodes = const []});
+  const ScanRecognition(this.result, this.embedding);
   final RecognitionResult result;
   final Embedding? embedding;
-  final List<String> barcodes;
 }
 
 /// Recognises a product photo entirely on the phone: EasySell Vision compares
 /// the photo with the shop's taught products while ML Kit reads the label,
-/// and the two are fused (design §5, §5a). A barcode the shop has seen before
-/// settles it outright. Replaces the Gemini `recognize-product` function; no
-/// network, typically well under a second.
+/// and the two are fused (design §5, §5a). Replaces the Gemini
+/// `recognize-product` function; no network, typically well under a second.
 class VisionScanRepository {
-  VisionScanRepository(this._embedder, this._store, this._reader, this._barcodes);
+  VisionScanRepository(this._embedder, this._store, this._reader);
 
   final Future<VisionEmbedder> _embedder;
   final EmbeddingStore _store;
   final LabelReader _reader;
-  final BarcodeStore _barcodes;
 
   List<Product>? _matcherFor;
   ProductMatcher? _matcher;
@@ -51,23 +47,6 @@ class VisionScanRepository {
       final embedding = await photoF;
       final label = await labelF;
 
-      final ids = {for (final p in products) p.id};
-      final known = await _barcodes.productFor(label.barcodes);
-      if (known != null && ids.contains(known)) {
-        return Result.success(
-          ScanRecognition(
-            RecognitionResult(
-              status: RecognitionStatus.match,
-              matches: [ProductMatch(productId: known, confidence: 1)],
-              readName: label.headline,
-              readSize: QueryText.findSize(label.text),
-            ),
-            embedding,
-            barcodes: label.barcodes,
-          ),
-        );
-      }
-
       final photo = embedding == null
           ? const <String, double>{}
           : await _store.similarities(embedding.vector);
@@ -77,7 +56,7 @@ class VisionScanRepository {
             s.id: s.score,
       };
       final result = fuseScan(
-        productIds: ids,
+        productIds: products.map((p) => p.id),
         photo: photo,
         text: text,
         photoAvailable: embedding != null,
@@ -86,14 +65,30 @@ class VisionScanRepository {
       );
       debugPrint('scan-timing: photo ${photoMs}ms label ${labelMs}ms '
           'total ${watch.elapsedMilliseconds}ms');
-      return Result.success(
-        ScanRecognition(result, embedding, barcodes: label.barcodes),
-      );
+      // What the scan saw, for tuning on a real phone (logcat only).
+      final names = {for (final p in products) p.id: p.name};
+      String top(Map<String, double> scores) => _top(scores, names);
+      debugPrint('scan-read: "${label.text.replaceAll('\n', ' | ')}" '
+          'text ${top(text)} photo ${top(photo)} -> '
+          '${result.status.name} ${top({
+            for (final m in result.matches) m.productId: m.confidence,
+          })}');
+      return Result.success(ScanRecognition(result, embedding));
     } catch (e) {
       return const Result.failure(
         UnexpectedFailure('Could not recognize the product. Please try again.'),
       );
     }
+  }
+
+  /// The three best scores as `name:0.82`, for the scan log.
+  static String _top(Map<String, double> scores, Map<String, String> names) {
+    final top = scores.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return top
+        .take(3)
+        .map((e) => '${names[e.key] ?? '?'}:${e.value.toStringAsFixed(2)}')
+        .join(', ');
   }
 
   /// Gets the model, ML Kit and the fingerprints ready while the camera
@@ -144,16 +139,9 @@ class VisionScanRepository {
     return _matcher!;
   }
 
-  /// Teaches the model that [scan] showed [productId] (a confirmed scan):
-  /// the photo, and the barcode so the next scan of it is exact.
-  Future<void> learn(String productId, ScanRecognition scan) async {
-    for (final code in scan.barcodes) {
-      await _barcodes.learn(productId, code);
-    }
-    if (scan.embedding case final Embedding e) {
-      await _store.learn(productId, e, source: 'scan');
-    }
-  }
+  /// Teaches the model that [embedding] is [productId] (a confirmed scan).
+  Future<void> learn(String productId, Embedding embedding) =>
+      _store.learn(productId, embedding, source: 'scan');
 }
 
 final visionScanRepositoryProvider = Provider<VisionScanRepository>((ref) {
@@ -163,6 +151,5 @@ final visionScanRepositoryProvider = Provider<VisionScanRepository>((ref) {
     ref.watch(visionEmbedderProvider.future),
     ref.watch(embeddingStoreProvider),
     reader,
-    ref.watch(barcodeStoreProvider),
   );
 });
