@@ -13,6 +13,7 @@ Background noise is mixed into the features so it copes with a busy shop.
 import argparse
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -123,8 +124,11 @@ def main():
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--max-frames", type=int, default=24000)
     ap.add_argument("--eval-every", type=int, default=800)
+    ap.add_argument("--save-every", type=int, default=100, help="resume point every N steps (a power cut loses less)")
     ap.add_argument("--minutes", type=float, default=0, help="stop after this long (0: no limit)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--mem-fraction", type=float, default=0.85,
+                    help="cap on GPU memory; past the card's own memory Windows spills to RAM and steps crawl")
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     random.seed(0)
@@ -149,6 +153,8 @@ def main():
             rows = random.Random(1).sample(s.rows, min(a.test_n, len(s.rows)))
             tests[n] = [(s, r) for r in rows]
 
+    if str(dev).startswith("cuda"):
+        torch.cuda.set_per_process_memory_fraction(a.mem_fraction)
     model = Transducer(a.model).to(dev)
     model.train()
     state_path = a.out / "last.pt"
@@ -166,6 +172,10 @@ def main():
     def evaluate():
         return {n: wer(model, it, sp, dev) for n, it in tests.items()}
 
+    if best is None and (a.out / "baseline.json").exists():
+        base = json.load(open(a.out / "baseline.json"))["original"]
+        best = {"score": sum(base.values()) / len(base), "wer": base, "step": 0}
+        print(f"original model WER (saved): {base} (mean {best['score']:.2f})", flush=True)
     if best is None:
         base = evaluate()
         best = {"score": sum(base.values()) / len(base), "wer": base, "step": 0}
@@ -179,6 +189,13 @@ def main():
         p = min(1.0, (s - warm) / max(1, total - warm))
         return a.lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * p)))
 
+    def save_state():
+        # Written beside last.pt and swapped in, so a crash mid-save keeps the previous one.
+        tmp = state_path.with_suffix(".tmp")
+        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": step, "best": best,
+                    "epoch": step // steps_per_epoch}, tmp)
+        os.replace(tmp, state_path)
+
     def checkpoint_eval():
         nonlocal best
         res = evaluate()
@@ -190,13 +207,14 @@ def main():
             best = {"score": score, "wer": res, "step": step}
             model.save_onnx(a.out / "best_onnx")
             json.dump(best, open(a.out / "best.json", "w"))
-        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": step, "best": best,
-                    "epoch": step // steps_per_epoch}, state_path)
+        save_state()
 
     stop = False
     for epoch in range(start_epoch, math.ceil(a.epochs)):
         random.seed(100 + epoch)
-        for b in batches(train, a.max_frames):
+        # After a resume, continue with the batches this epoch had not reached.
+        done = step - epoch * steps_per_epoch if epoch == start_epoch else 0
+        for b in batches(train, a.max_frames)[max(0, done):]:
             if step >= total:
                 stop = True
                 break
@@ -228,6 +246,8 @@ def main():
                       f"{el:.1f} min", flush=True)
             if step % a.eval_every == 0:
                 checkpoint_eval()
+            elif step % a.save_every == 0:
+                save_state()
             if a.minutes and time.time() - t0 > a.minutes * 60:
                 stop = True
                 break

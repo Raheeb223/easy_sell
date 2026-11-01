@@ -2,7 +2,6 @@ import 'dart:typed_data';
 
 import 'package:ai_shopkeeper/core/error/result.dart';
 import 'package:ai_shopkeeper/features/inventory/domain/product.dart';
-import 'package:ai_shopkeeper/features/scan/data/vision_embedder.dart';
 import 'package:ai_shopkeeper/features/scan/data/vision_scan_repository.dart';
 import 'package:ai_shopkeeper/features/scan/domain/recognition_result.dart';
 
@@ -52,6 +51,6 @@ abstract class IndexedScanRepo implements VisionScanRepository {
   Future<void> warmUp() async {}
 
   @override
-  Future<void> learn(String productId, Embedding embedding) async =>
+  Future<void> learn(String productId, ScanRecognition scan) async =>
       learned.add(productId);
 }

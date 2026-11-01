@@ -35,6 +35,7 @@ class BackupService {
     'customer_ledger',
     'product_embeddings',
     'product_aliases',
+    'product_barcodes',
   ];
 
   static const _blobColumns = {'vector'};
